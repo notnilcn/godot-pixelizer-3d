@@ -230,5 +230,7 @@ func _on_texture_setting_changed(p_setting_name: String, p_value: Variant) -> vo
 
 
 func _on_slider_drag_ended(ended: bool) -> void:
-	for chunk: MarchingSquaresTerrainChunk in plugin.current_terrain_node.chunks.values():
-		chunk.grass_planter.regenerate_grass()
+	for chunk in plugin.current_terrain_node.chunks.values():
+		if chunk is MarchingSquaresTerrainChunk or chunk is MarchingSquaresCellChunk:
+			if chunk.grass_planter:
+				chunk.grass_planter.regenerate_all_cells()

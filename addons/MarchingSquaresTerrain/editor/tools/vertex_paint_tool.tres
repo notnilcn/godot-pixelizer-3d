@@ -12,8 +12,6 @@ material = true
 texture_name = true
 texture_preset = true
 paint_walls = true
-paint_mode = true
-transition_kind = true
 metadata/_custom_type_script = "uid://b6jopat61dbd3"
 
 [resource]
@@ -30,8 +28,6 @@ Used to paint textures onto the terrain.
     • 16 is a void material making terrain invisible.
 • Texture presets can be used to quickly swap between texture pallets.
     • They can be exported via the right hand panel at the bottom.
-• "Paint Mode" switches between painting ground textures, wall textures and edge transitions.
-    • Transition painting sets the edge nearest to the cursor (cliff / terrace / slope / default).
 • \"Quick Paints\" are a way to quickly set textures while moddeling the terrain.
     • You can make global or texture preset specific ones. 
         • → Create a MarchingSquaresQuickPaint resource in their dedicated folders in the parent plugin folder."

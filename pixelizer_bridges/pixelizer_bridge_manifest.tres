@@ -11,7 +11,7 @@ approved = true
 has_vertex = true
 has_fragment = true
 writes_alpha = true
-output_path = "res://pixelizer_bridges/mst_terrain.gdshader"
+output_path = "res://pixelizer_bridges/addons/MarchingSquaresTerrain/resources/shaders/mst_terrain.gdshader"
 generated_hash = "41348bd6482a73440b4f09fbd85ba61f3d8ef7ff56937803b1a6ae2dd5ff5459"
 rules_version = 2
 
@@ -21,7 +21,7 @@ source_path = "res://addons/MarchingSquaresTerrain/resources/shaders/mst_terrain
 source_hash = "d84567ab2736a798f5535ea7457554fb9d52d9e28c7d318511f93adcdd70755b"
 approved = true
 has_fragment = true
-output_path = "res://pixelizer_bridges/mst_terrain_baked.gdshader"
+output_path = "res://pixelizer_bridges/addons/MarchingSquaresTerrain/resources/shaders/mst_terrain_baked.gdshader"
 generated_hash = "ab806db808b533c432844addce92d99d2f63930766eefa2252ee55f9207e3485"
 rules_version = 2
 
@@ -33,11 +33,56 @@ approved = true
 has_vertex = true
 has_fragment = true
 writes_alpha = true
-output_path = "res://pixelizer_bridges/mst_grass.gdshader"
+output_path = "res://pixelizer_bridges/addons/MarchingSquaresTerrain/resources/shaders/mst_grass.gdshader"
 generated_hash = "c7a1c92439821ce934c05b1f08b81b54e8bacdaf7bb61d7707cec526e28e846c"
+rules_version = 2
+
+[sub_resource type="Resource" id="Resource_2tshe"]
+script = ExtResource("1_2tshe")
+source_path = "res://addons/MarchingSquaresTerrain/resources/shaders/hex_brush_radius_visual.gdshader"
+source_hash = "b1b098d83ff66a90bc69c50cd4b3e69877ca4ee7e29f3bee70161a8cf8d2a536"
+approved = true
+has_fragment = true
+writes_alpha = true
+output_path = "res://pixelizer_bridges/addons/MarchingSquaresTerrain/resources/shaders/hex_brush_radius_visual.gdshader"
+generated_hash = "3c04a5306dfe954f51c8a607c9f04cdb636e252b2ff722413191262e9417e1df"
+rules_version = 2
+
+[sub_resource type="Resource" id="Resource_6erws"]
+script = ExtResource("1_2tshe")
+source_path = "res://addons/MarchingSquaresTerrain/resources/shaders/mst_terrain_bake.gdshader"
+source_hash = "27800a0189f935f644c0069b3cb344df43ff9127f9acb1f30696c403f87ffc11"
+approved = true
+has_vertex = true
+has_fragment = true
+writes_alpha = true
+output_path = "res://pixelizer_bridges/addons/MarchingSquaresTerrain/resources/shaders/mst_terrain_bake.gdshader"
+generated_hash = "8e65e39c300baa99118ccd3a0f81a5d0b3d7eab7b23c29ce0bca34a810acf785"
+rules_version = 2
+
+[sub_resource type="Resource" id="Resource_i5tvy"]
+script = ExtResource("1_2tshe")
+source_path = "res://addons/MarchingSquaresTerrain/resources/shaders/round_brush_radius_visual.gdshader"
+source_hash = "6ec02509e86e457d8ba953e24aa5ac60eae65b78551dc808b987609c44ac32d4"
+approved = true
+has_fragment = true
+writes_alpha = true
+output_path = "res://pixelizer_bridges/addons/MarchingSquaresTerrain/resources/shaders/round_brush_radius_visual.gdshader"
+generated_hash = "8df2332f8cb55e9e3f2ce112505462d8ce2c558a64be8e0637c5da1da2419c27"
+rules_version = 2
+
+[sub_resource type="Resource" id="Resource_rx6lm"]
+script = ExtResource("1_2tshe")
+source_path = "res://addons/MarchingSquaresTerrain/resources/shaders/square_brush_radius_visual.gdshader"
+source_hash = "c34c92776cd032f7b3cd8eedffc1538c6d1eceed873054b1d4baa02e99ecdc56"
+approved = true
+has_fragment = true
+writes_alpha = true
+output_path = "res://pixelizer_bridges/addons/MarchingSquaresTerrain/resources/shaders/square_brush_radius_visual.gdshader"
+generated_hash = "8ac54c7061761fe0b48b1800c6fded7a5978335afa78de4e744aea4d299d91be"
 rules_version = 2
 
 [resource]
 script = ExtResource("2_6erws")
 roots = PackedStringArray("res://addons/MarchingSquaresTerrain")
-entries = Array[ExtResource("1_2tshe")]([SubResource("Resource_fkh33"), SubResource("Resource_q6xcv"), SubResource("Resource_yvcmq")])
+entries = Array[ExtResource("1_2tshe")]([SubResource("Resource_fkh33"), SubResource("Resource_q6xcv"), SubResource("Resource_yvcmq"), SubResource("Resource_2tshe"), SubResource("Resource_6erws"), SubResource("Resource_i5tvy"), SubResource("Resource_rx6lm")])

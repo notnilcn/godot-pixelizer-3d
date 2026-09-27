@@ -1,49 +1,60 @@
-# AGENTS.md — MarchingSquaresTerrain (Yūgen's Terrain Authoring Toolkit)
+# AGENTS.md — `addons/MarchingSquaresTerrain` (Yūgen's Terrain Authoring Toolkit)
 
-Godot 4.6 editor plugin (v1.2.4, MIT) for authoring 3D terrain in-editor. **This fork converts it from marching-squares vertex-heightmap terrain to hexagonal stepped terrain**: the world is a pointy-top axial hex grid, each hex owns an integer elevation level, ground/wall texture slots, a grass flag and per-edge transition kinds; chunks are hex-shaped regions that build per-hex fan meshes with vertical cliff walls between levels. Originally made by Yūgen, forked from Jackachulian. Plugin entry point: `plugin.cfg` → `editor/marching_squares_terrain_plugin.gd`. **The plugin is enabled in `client/project.godot`.**
+This folder is the **entire plugin**. It is distributed by copying the folder into another project's `addons/` — keep it self-contained: no imports from outside `res://addons/MarchingSquaresTerrain/` (engine/editor APIs excepted). Read this file before touching any `.gd` here.
 
-Upstream docs (read these first for feature work):
-- `documentation/plugin_quick_guide.md` — user-facing tool overview.
-- `documentation/documentation+/internal_tool_system.md` — **the** guide for adding tools/attributes/terrain settings. Follow its exact sequence.
-- `documentation/documentation+/code_locations.md` — where specific logic lives (grass/texture mixing, normals, gizmo lines, triplanar mapping, ridge/ledge).
-- `documentation/documentation+/code_style_guide.md` — mandatory style for any contribution (summarized below).
-- `documentation/documentation+/navmesh_guide.md` — NavigationMesh baking recipe.
+## Layout
 
-## Architecture
+| Path | Role |
+|---|---|
+| `plugin.cfg`, `editor/marching_squares_terrain_plugin.gd` | Entry point. `MarchingSquaresTerrainPlugin` (`EditorPlugin`, static `instance`): owns tool mode (`TerrainToolMode`), brush state, selection, and the paint pipeline (`draw_pattern`). |
+| `editor/marching_squares_ui.gd` | Dock UI; builds tool settings from attribute dictionaries and forwards changes to the plugin. |
+| `editor/gizmos/` | `MarchingSquaresTerrainGizmo` (brush/selection drawing), `MarchingSquaresTerrainChunkGizmo`, `MarchingSquaresTerrainCellChunkGizmo` (per-cell height handles), and the gizmo plugin that registers them. |
+| `editor/tools/scripts/` | Tool resources + attribute system: `MarchingSquaresTool`, `MarchingSquaresToolbox`, `MarchingSquaresToolbar`, `MarchingSquaresToolAttributes(+List,+Settings)`, texture presets/lists/names/quick paints, geometry baker. |
+| `editor/utils/` | `BrushPatternCalculator` (brush sampling, `grid_aligned_cells`, `grid_aligned_outline`), `EngineWrapper` (editor-vs-runtime helpers), file utils. |
+| `algorithm/terrain/marching_squares_terrain.gd` | `MarchingSquaresTerrain` (`Node3D`): `GridType {SQUARE, TRIANGLE, HEX}`, chunk lifecycle, data directory, save hooks. |
+| `algorithm/terrain/marching_squares_terrain_chunk.gd` | Original square marching-squares chunk. |
+| `algorithm/terrain/marching_squares_terrain_chunk_base.gd` | `MarchingSquaresTerrainChunkBase`: shared virtual API for all chunk types (heights, colors, dirty flag). |
+| `algorithm/terrain/marching_squares_terrain_cell.gd`, `..._vertex_color_helper.gd` | Per-cell data plus texture/grass vertex-color math (consumed by the `mst_terrain` shader). |
+| `algorithm/cells/marching_squares_cell_chunk.gd` | `MarchingSquaresCellChunk`: shared mesh generation for triangle/hex (`_emit_cell`, `_emit_wall`, `_emit_ramp`), merge modes, grass + save hooks. |
+| `algorithm/cells/marching_squares_cell_grass_planter.gd` | Grass placement for cell chunks. |
+| `algorithm/hex/`, `algorithm/tri/` | `MarchingSquaresHexGrid`/`MarchingSquaresHexChunk` and `MarchingSquaresTriGrid`/`MarchingSquaresTriChunk`: per-mode coordinate math and shape/neighbour implementations. |
+| `algorithm/grass/marching_squares_grass_planter.gd` | Square-grid grass (MultiMesh). |
+| `resources/mst_chunk_data.gd` | `MSTChunkData`: serialized per-chunk payload. |
+| `resources/mst_data_handler.gd` | `MSTDataHandler`: all external save/load, per-mode subfolders, legacy data migration. |
+| `resources/shaders/` | `mst_terrain` (+ `.gdshaderinc`), `mst_grass`, bake/baked variants, brush visuals. |
+| `resources/plugin_materials/`, `texture_presets/`, `quick_paints/` | Default materials/visuals, texture presets, quick paints. |
+| `utils/marching_squares_thread_pool.gd` | Background mesh regeneration. |
+| `documentation/` | `plugin_quick_guide.md` (user-facing) and `documentation+/` (code style, internal tool system, code locations, navmesh guide). |
 
-### Runtime/algorithm (`algorithm/`, `resources/`, `utils/`)
-- `algorithm/terrain/mst_hex_math.gd` — `MSTHexMath` (static, @tool): pointy-top axial hex math ported from the game's `client/Scripts/World/HexMath.cs` and the server's vendored hexx (`to_higher_res`/`to_lower_res` chunk mapping), plus the 16-slot ↔ vertex-color-pair encoding helpers (`slot_to_color_pair`/`color_pair_to_slot`, consolidated from `MSTDataHandler`).
-- `algorithm/terrain/marching_squares_terrain.gd` — `MarchingSquaresTerrain` (`@tool Node3D`), the scene root. Holds the `chunks` dictionary, global settings (`hex_size` = hex outer radius, `level_height` = Y per elevation level, `chunk_radius` = hexes from chunk center to edge, `default_transition` = derived edge kind for unauthored edges), `blend_mode`, `wall/ridge/ledge_threshold`, 15 terrain textures + 6 grass sprites + albedos/scales, and `StorageMode` (**BAKED** = mesh/grass/collision stored on disk; **RUNTIME** = rebuild from hex records). Saves chunks on `NOTIFICATION_EDITOR_PRE_SAVE`. On load, chunk node positions are snapped to the position derived from `chunk_coords` (self-heals stale scene-file transforms). `get_hex_global(q, r)` resolves a hex record across chunk borders (default record inside existing chunks, empty = void); `get_elevation_at_world(x, z)` for brush picking. Chunks are hex-shaped and hexes have single ownership — there is no border copying.
-- `algorithm/terrain/marching_squares_terrain_chunk.gd` — `MarchingSquaresTerrainChunk` (`@tool MeshInstance3D`), one hex-shaped chunk. Stores `hex_data : Dictionary` (local axial `Vector2i` → `{elevation: int, ground: int, wall: int, grass: bool, edges: int}`; `edges` packs 6×2-bit transition kinds in server neighbor-delta order, owned by the higher hex of each pair) and builds the whole-chunk mesh via SurfaceTool: per-hex top fans at `elevation * level_height`, vertical cliff walls on edges toward lower/void neighbors, and terrace/slope strips for authored or derived transition edges. **The editor always rebuilds mesh/grass from `hex_data` on load — baked mesh/grass are a runtime-only optimization, so stale bakes can never shadow source data.** Vertex channels feed the unmodified shader contract (COLOR/CUSTOM0 = slot pair, CUSTOM1 = grass/ridge/ledge/nearest-wall, CUSTOM2 = packed material blend); it pins the shader uniforms `chunk_size = ivec3(2,2,2)`, `cell_size = vec2(1,1)` so UV2 = raw world XZ tiles at 1 world unit. Its `StaticBody3D` collision child is **deleted and recreated on every save** — put groups on the chunk node itself, not the body (group names must start with `navmesh_` to be copied over, see navmesh guide).
-- `algorithm/grass/marching_squares_grass_planter.gd` — `MarchingSquaresGrassPlanter` (`@tool MultiMeshInstance3D`): scatters grass instances inside hex top polygons (seeded rejection sampling, deterministic per hex) at `elevation * level_height`, gated by the per-hex `grass` bool + the slots 1-6 rule. Wind/animation lives at the top of `resources/shaders/mst_grass.gdshader` (`animation_fps` 0 = smooth noise wind, >0 = stepped pixel-art motion).
-- `resources/mst_data_handler.gd` + `resources/mst_chunk_data.gd` — persistence (**V3 hex format**, hard break from V2 with no migration: per-chunk `chunk_radius` snapshot + parallel arrays of local axial offsets/elevations/ground/wall/grass/edges). Per-terrain data dir: `[SceneDir]/[SceneName]_TerrainData/[NodeName]_[uid]/chunk_X_Y/metadata.res` (compressed `MSTChunkData`). Only dirty chunks are saved; orphaned chunk/terrain dirs are auto-cleaned on save.
-- `resources/mst_json_io.gd` — `MSTJsonIO` (static): versioned JSON export/import (`format: "mst-hex-terrain", version: 1`) using **absolute axial coords** so files are chunking-agnostic and directly consumable server-side. Per-hex defaults are omitted on export; `edges` written as 6 ints in neighbor-delta order when non-default.
-- `editor/tools/scripts/marching_squares_geometry_baker.gd` + `resources/shaders/mst_terrain_bake*.gdshader` — optional **runtime texture baking** (`enable_runtime_texture_baking`): bakes the multi-texture terrain into per-polygon atlas textures so the game runs a simple baked shader instead of the 15-texture one.
-- `utils/marching_squares_thread_pool.gd` — thin WorkerThreadPool group-task wrapper.
-- `mc.tct` — legacy/original chunk script kept for reference; the live chunk script is the one in `algorithm/terrain/`.
+## Core architecture
 
-### Editor (`editor/`)
-- `marching_squares_terrain_plugin.gd` — `MarchingSquaresTerrainPlugin` (EditorPlugin): input handling (`_forward_3d_gui_input` → `handle_mouse`), brush raycasts, the `TerrainToolMode` enum (BRUSH, LEVEL, SMOOTH, BRIDGE, GRASS_MASK, VERTEX_PAINTING, DEBUG_BRUSH, CHUNK_MANAGEMENT, TERRAIN_SETTINGS, IMPORT_EXPORT), the `draw_pattern()` dispatch, and all undo/redo actions (`draw_*_pattern_action` + `apply_composite_pattern_action`). Brush patterns key hexes as `chunk_coords → local axial Vector2i → sample`; elevations are integer levels, textures are per-hex slots, grass is a per-hex bool. VERTEX_PAINTING's `paint_mode` option also does transition painting (nearest edge to the cursor, owned by the higher hex). New tool behavior is coded here.
-- `marching_squares_ui.gd`, `tools/scripts/marching_squares_toolbar.gd`, `marching_squares_tool_attributes.gd` — the dock UI. Attributes are declared as Dictionary entries in `marching_squares_tool_attributes_list.gd` (name/type/label/default; types in `SettingType` enum) and enabled per-tool via boolean exports in `marching_squares_tool_attribute_settings.gd`.
-- `tools/*.tres` — the tools themselves: `MarchingSquaresTool` resources. New tools also need a preload entry in `tools/scripts/marching_squares_toolbox.gd`. `import_export_tool.tres` drives `MSTJsonIO` via two path text fields + two buttons.
-- `gizmos/` + `marching_squares_terrain_gizmo_plugin.gd` — editor gizmos (hexagon chunk outlines with neighbor-chunk side culling, hex-prism brush visual, per-hex handles).
-- `tools/scripts/marching_squares_texture_*.gd`, `marching_squares_quick_paint.gd` — texture presets (swappable palettes, exported to `resources/texture_presets/`) and quick paints (`resources/quick_paints/`, global ones in `quick_paints/global/`).
+- **Grid types.** `SQUARE` is the original marching-squares pipeline. `TRIANGLE`/`HEX` are cell modes: every cell renders as a flat polygon at its own height with walls/ramps toward lower neighbours. `MarchingSquaresTerrain.make_chunk()` dispatches on `grid_type`; all painting tools work on all three modes.
+- **Data.** Chunks are stored outside the scene under the terrain's `data_directory`, in per-mode subfolders `square/`, `triangle/`, `hex/` (`MSTDataHandler.MODE_NAMES`, order must match `GridType`). Each chunk is `chunk_<x>_<y>/metadata.res` (an `MSTChunkData`). Legacy data at the directory root is migrated to `square/`. Saving is triggered from `NOTIFICATION_EDITOR_PRE_SAVE` and explicit `MSTDataHandler` calls, not on every stroke.
+- **Editor tools.** `TerrainToolMode` enumerates the tools; attributes are declared in `MarchingSquaresToolAttributeSettings` + `MarchingSquaresToolAttributesList`, resolved in `MarchingSquaresToolAttributes` (`add_setting`, `_get_setting_value`) and `MarchingSquaresUI._on_setting_changed`, then executed in the plugin's `draw_pattern`. Grid-aligned painting is gated by `grid_align_gate_passes()` (cell terrain + hex brush + falloff off) and sampled with `BrushPatternCalculator.grid_aligned_cells`.
+- **Rendering.** One `MeshInstance3D` per chunk plus a `StaticBody3D` collider. Texture/grass information rides in vertex colors (`color_0`, `color_1`, wall/grass maps) interpreted by `MarchingSquaresTerrainVertexColorHelper` and `mst_terrain.gdshader`; grass is a MultiMesh driven by the grass planters. Bake shaders feed runtime texture baking.
 
-## Code style (required — from `code_style_guide.md`)
-- `extends` before `class_name`; class names prefixed `MarchingSquares` or `MST` (prefer `MST` for long names).
-- snake_case members; private functions get a leading `_` (variables do not).
-- **Tabs** in GDScript (the opposite in gdshader files). Two blank lines between functions and after the variable block; `#region` names lowercase.
-- Variable typing with a space before the colon: `var foo : float` (functions/dictionaries use normal `:` convention).
-- Hidden terrain exports use `@export_custom(PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE)` with a setter that pushes the value wherever it's needed (e.g. shader param) instead of call chains.
-- `##` doc comments only for editor-visible docs; all comments start with a capital.
+## Conventions
 
-## Gotchas
-- Everything is `@tool` — scripts run in the editor. Guard editor-only APIs and be careful with scene-tree assumptions at load.
-- Vertex "colors" are texture indices, not tint colors: the shader (`resources/shaders/mst_terrain.gdshaderinc`) reads the pair of "on" channels across COLOR/CUSTOM0 as one of 16 slots (0 = rr, 1 = rg, … 15 = aa). Slot 15 (aa) = void (top fan skipped). Only textures 1–6 can have grass. Encode/decode via `MSTHexMath.slot_to_color_pair`/`color_pair_to_slot`.
-- Elevations are integer levels (`y = elevation * level_height`), stored per hex — there is no per-vertex heightmap anymore.
-- Terrain settings are stored on the `MarchingSquaresTerrain` node via storage-only exports and edited through the plugin's Terrain Settings tool, not the default inspector.
-- The plugin UI reads attribute dictionaries top-to-bottom — order in `MarchingSquaresToolAttributesList` defines UI order.
-- Brush interactions: SHIFT+LMB keeps drawing, SHIFT+scroll resizes, ALT/ESC/RMB deselects; CTRL samples (level height / chunk select).
+- Follow `documentation/documentation+/code_style_guide.md`: tabs, `MarchingSquares`/`MST` class-name prefixes, snake_case, `variable : type` spacing, 2 blank lines between sections/functions, `#region` blocks, `##` comments for editor-visible APIs.
+- Scripts run in the editor: keep `@tool` behaviour safe and guard runtime-only APIs (`EngineWrapper.is_editor()`, `Engine.is_editor_hint()`).
+- Never hand-edit `.uid` files. Move/rename scripts through the editor so `uid://` preloads stay valid — many preloads reference UIDs, not paths.
+- Keep the addon self-contained and copy-paste friendly.
 
-## Testing / verification
-There is no test suite. Verification = opening a project that has the plugin enabled in the Godot editor and exercising the tools. This checkout (`addons/` at the workspace root) has **no `project.godot`** — it's a bare addons folder; the same addon also exists under `main/client/addons/MarchingSquaresTerrain` (a Godot 4.7 C# project). 4.6→4.7 compatibility was audited against the official 4.7 docs (`code_examples/godot-docs-html-stable/`) and is clean: no breaking-change or behavior-change APIs are used, no deprecated APIs are used (the plugin docks via `add_control_to_container`, not the deprecated `add_control_to_dock`), and all engine virtuals return explicitly on every path. A bundled Godot 4.7.1 mono binary lives at `C:/Users/Clinton/g/Godot/`; see the `godot-compositor-testing` skill for headless import/parse checks (e.g. `Godot-stable_mono_win64_console.exe --headless --import --path <project>`) before claiming a script change parses.
+## Extending
+
+- **New tool or attribute**: `documentation/documentation+/internal_tool_system.md` walks through the tool resource, attribute lists, UI wiring, and `draw_pattern` behaviour.
+- **New grid mode**: add a `GridType` value + chunk class + grid math class, wire into the terrain's `make_chunk()`/mode switch, and append the folder name to `MSTDataHandler.MODE_NAMES` (order = enum order).
+
+## Pitfalls
+
+- `.gitignore` contains bare `square/`, `triangle/`, `hex/` patterns, so **new files under `algorithm/hex/` are git-ignored** — use `git add -f` (do not rename the folder).
+- `mc.tct` is a stray copy of the square chunk script that Godot never imports (wrong extension). `algorithm/terrain/marching_squares_terrain_chunk.gd` is the source of truth.
+- Square-only logic belongs in `MarchingSquaresTerrainChunk`; the cell chunks share `MarchingSquaresCellChunk` via `MarchingSquaresTerrainChunkBase`. `grass_planter` is null on cell chunks (different planter class).
+- `is_data_directory_unique` + `copy_from_dir` in `MarchingSquaresTerrain._initialize_data_directory()` prevent duplicate-node data collisions — don't remove that handling.
+- Per-chunk merge modes decide whether cell-mode steps become 45° ramps; `CUBIC` keeps exact columns.
+
+## Verification
+
+- Parse/import check from the repo root: `godot --headless --editor --quit --path .` (see the root `AGENTS.md` for the local Godot binary).
+- Headless behaviour tests: `godot --headless --path . --script res://tests/run_grid_tests.gd` (also `run_cell_chunk_tests`, `run_brush_tests`, `run_grid_align_tests`, `run_merge_tests`, `run_bridge_smooth_tests`, `run_tool_tests`, `run_cell_save_tests`, `run_perf_tests`). They print `PASSED`/`FAILED` and exit non-zero on failure.
+- Windowed only (the dummy renderer has no MultiMesh readback): `run_cell_grass_tests.gd`; visual captures use `capture_*.gd -- --capture` and save PNGs to `user://`.

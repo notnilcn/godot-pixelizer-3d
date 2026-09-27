@@ -16,5 +16,4 @@ var tools : Array[MarchingSquaresTool] = [
 	preload("uid://ktb4desoyt1j"), # Debug brush tool
 	preload("uid://ups2hlmespdm"), # Chunk manager tool
 	preload("uid://vh1ngh2y52b8"), # Terrain settings tool
-	preload("res://addons/MarchingSquaresTerrain/editor/tools/import_export_tool.tres"), # Import/export tool
 ]

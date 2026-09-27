@@ -12,6 +12,7 @@ func _init():
 
 
 var _chunk_gizmos : Dictionary[Node, MarchingSquaresTerrainChunkGizmo] = {}
+var _cell_chunk_gizmos : Dictionary[Node, MarchingSquaresTerrainCellChunkGizmo] = {}
 var _terrain_gizmos : Dictionary[Node, MarchingSquaresTerrainGizmo] = {}
 
 
@@ -22,6 +23,12 @@ func _create_gizmo(node: Node):
 			node.tree_exited.connect(func(): _chunk_gizmos.erase(node), CONNECT_ONE_SHOT)
 			var ret = MarchingSquaresTerrainChunkGizmo.new()
 			_chunk_gizmos[node] = ret
+			return ret
+	elif node is MarchingSquaresCellChunk:
+		if not _cell_chunk_gizmos.has(node):
+			node.tree_exited.connect(func(): _cell_chunk_gizmos.erase(node), CONNECT_ONE_SHOT)
+			var ret = MarchingSquaresTerrainCellChunkGizmo.new()
+			_cell_chunk_gizmos[node] = ret
 			return ret
 	elif node is MarchingSquaresTerrain:
 		if not _terrain_gizmos.has(node):
@@ -35,6 +42,8 @@ func _create_gizmo(node: Node):
 func trigger_redraw(node: Node) -> void:
 	if node is MarchingSquaresTerrainChunk and _chunk_gizmos.has(node):
 		_chunk_gizmos[node]._redraw()
+	elif node is MarchingSquaresCellChunk and _cell_chunk_gizmos.has(node):
+		_cell_chunk_gizmos[node]._redraw()
 	elif node is MarchingSquaresTerrain and _terrain_gizmos.has(node):
 		
 		_terrain_gizmos[node]._redraw()
@@ -43,6 +52,8 @@ func trigger_redraw(node: Node) -> void:
 func clear() -> void:
 	for k in _chunk_gizmos:
 		_chunk_gizmos[k].clear()
+	for k in _cell_chunk_gizmos:
+		_cell_chunk_gizmos[k].clear()
 	for k in _terrain_gizmos:
 		_terrain_gizmos[k].clear()
 

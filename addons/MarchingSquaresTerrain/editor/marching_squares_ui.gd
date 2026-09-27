@@ -50,7 +50,7 @@ func _enter_tree() -> void:
 
 
 func _deferred_enter_tree() -> void:
-	if not EngineWrapper.instance.is_editor():
+	if not EngineWrapper.is_editor():
 		push_error("Attempt to load during runtime (NOT SUPPORTED IN CURRENT BUILD)")
 		return
 	
@@ -151,6 +151,12 @@ func _on_setting_changed(p_setting_name: String, p_value: Variant) -> void:
 				plugin.falloff = p_value
 				if plugin.BRUSH_RADIUS_MATERIAL:
 					plugin.BRUSH_RADIUS_MATERIAL.set_shader_parameter("falloff_visible", p_value)
+		"grid_aligned":
+			if p_value is bool:
+				plugin.grid_aligned = p_value
+		"grid_size":
+			if p_value is float or p_value is int:
+				plugin.grid_size = int(p_value)
 		"strength":
 			if p_value is float or p_value is int:
 				plugin.strength = float(p_value)
@@ -179,7 +185,7 @@ func _on_setting_changed(p_setting_name: String, p_value: Variant) -> void:
 				plugin.current_texture_preset = null
 			plugin.current_terrain_node.force_batch_update()
 			plugin.current_terrain_node.is_batch_updating = false
-			for chunk: MarchingSquaresTerrainChunk in plugin.current_terrain_node.chunks.values():
+			for chunk in plugin.current_terrain_node.chunks.values():
 				chunk.mark_dirty()
 			# Rebuild tool attributes to refresh Quick Paint dropdown
 			tool_attributes.show_tool_attributes(active_tool)
@@ -191,45 +197,33 @@ func _on_setting_changed(p_setting_name: String, p_value: Variant) -> void:
 		"paint_walls":
 			if p_value is bool:
 				plugin.paint_walls_mode = p_value
-		"paint_mode":
-			if p_value is int:
-				plugin.paint_mode = p_value
-		"transition_kind":
-			if p_value is int:
-				plugin.transition_kind = p_value
-		"export_path":
-			if p_value is String:
-				plugin.export_path = p_value
-		"import_path":
-			if p_value is String:
-				plugin.import_path = p_value
-		"export_button":
-			MSTJsonIO.export_to_json(plugin.current_terrain_node, plugin.export_path)
-		"import_button":
-			MSTJsonIO.import_from_json(plugin.current_terrain_node, plugin.import_path, plugin)
+	
+	# Keep dependent controls (Grid Aligned / Grid Size) in sync after any change
+	if tool_attributes:
+		tool_attributes._update_dependency_states()
 
 
 func _on_terrain_setting_changed(p_setting_name: String, p_value: Variant) -> void:
 	var terrain := plugin.current_terrain_node
 	match p_setting_name:
-		"hex_size":
-			if p_value is float or p_value is int:
-				terrain.hex_size = p_value
-		"level_height":
-			if p_value is float or p_value is int:
-				terrain.level_height = p_value
-		"chunk_radius":
-			if p_value is int or p_value is float:
-				terrain.chunk_radius = int(p_value)
-		"default_transition":
+		"grid_type":
 			if p_value is int:
-				terrain.default_transition = p_value
+				terrain.grid_type = p_value as MarchingSquaresTerrain.GridType
+		"dimensions":
+			if p_value is Vector3i:
+				terrain.dimensions = p_value
+		"cell_size":
+			if p_value is Vector2:
+				terrain.cell_size = p_value
 		"blend_mode":
 			if p_value is int:
 				terrain.blend_mode = p_value
 		"wall_threshold":
 			if p_value is float:
 				terrain.wall_threshold = p_value
+		"noise_hmap":
+			if p_value is Noise or p_value == null:
+				terrain.noise_hmap = p_value
 		"wall_texture":
 			if p_value is Texture2D or p_value == null:
 				terrain.wall_texture = p_value

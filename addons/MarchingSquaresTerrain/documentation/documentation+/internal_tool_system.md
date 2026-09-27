@@ -4,7 +4,7 @@ This guide serves to explain how the internal tool system and its related code i
 
 ## Terrain Explained (SIMPLE VERSION)
 
-The terrain is built from a grid of pointy-top hexagons. Unlike the old marching squares version of this plugin, there is no per-vertex heightmap: every hex owns a small record — an integer `elevation` level (world Y = `elevation × level_height`), a `ground` and `wall` texture slot (0–15), a `grass` flag and a packed `edges` int with 6 × 2-bit transition kinds. Chunks are hex-shaped groups of hexes (radius `chunk_radius`) that store these records in a dictionary keyed by local axial offset. Editing works as follows: 1. select the hexes you want to change; 2. pick a new value; 3. store those values in the chunk's hex records and regenerate the chunk mesh. Almost everything in the plugin works this way — elevations, texture slots, grass flags, edge kinds, etc.
+The terrain is built from the marching squares algorithm, which means that unlike the marching cubes algorithm it can only have variation in the Y axis. For this reason, the terrain is built from a cellular grid (adjustable in the terrain settings tab in the plugin) and all the terrain behaviour is calculated from values stored in or referencing to those cells. For example, the process for increasing terrain height works as follows: 1. select the cells you want to change the height value for; 2. pick a higher number; 3. store those new numbers in a height map. Almost everything in the plugin works this way, color values for the grass and floor, texture id's, etc...
 
 ## Tools Explained
 
@@ -32,14 +32,12 @@ These are attributes specifically made to work for a singular specific brush and
 * texture_name → used to change the material names in the plugin interface
 * texture_preset → used to change all the vertex painting settings via pre-saved resources. This allows for quick swapping between aesthetics.
 * paint_walls → self explanatory.
-* paint_mode → switches vertex painting between ground slots, wall slots and edge transitions.
-* transition_kind → the edge kind written by transition painting (Default / Cliff / Terrace / Slope).
 
 ### Non-Brush Related Attributes
 
 These are usually reserved for terrain settings and also have interal code that deviates from the above attributes:
 
-* chunk_management → only has chunk selection right now, however this can be expanded upon
+* chunk_management → right now only has an option to change the merge_mode threshold value, however this can be expanded upon
 * terrain_settings → features all the global terrain settings as well as some (global) grass settings
 
 ### ________
@@ -79,8 +77,7 @@ The current _type_ field options are:
 6. TERRAIN,
 7. PRESET,
 8. QUICK_PAINT,
-9. BUTTON, _# A flat button that fires the setting when pressed (used by the IMPORT_EXPORT tool)._
-10. ERROR, _# This one is used as a failsafe if the internal logic fails._
+9. ERROR, _# This one is used as a failsafe if the internal logic fails._
 
 If you have a tool that uses custom logic that has nothing to do with brushes, then it is recommended to make its own option for it like CHUNK or TERRAIN. Adding new options can be done in the **MarchingSquaresToolAttributes** script under the `enum SettingType` variable. Make sure to also include the new setting type in the `type_map` variable in the `show_tool_attributes(tool_index: int) -> void` function.
 
@@ -98,13 +95,13 @@ After you have created your new attribute and selected it in the inspector for t
 
 [DISCLAIMER] Some tool functionality like disabling certain variables during certain tool uses is too complex to explain here and would require this guide to explain all the code in the plugin. If you find yourself stuck coding in new behaviour and can't figure out a good solution, please consider joining the [discord](https://discord.gg/ZSeYkTCgft) to ask questions and get feedback!
 
-To actually make your tools do something, you need to code in the behaviour in the **MarchingSquaresTerrainPlugin** script. First up, find the `TerrainToolMode` variable and place your new tool in the enum list. If your new tool is brush based the next section will be easy, otherwise you will need to do a lot more work to make your tool work:
+To actually make your tools do something, you need to code in the behaviour in the **MarchingSquaresTerrainPlugin** script. First up, find the `TerrainToolMode` variable and place your new tool in the enum list. If your new tool is brush based and has to do with changing the height in any sort of way the next section will be easy, otherwise you will need to do a lot more work to make your tool work:
 
-* For brush related tools, first up you need to go to the `draw_pattern(terrain: MarchingSquaresTerrain)` function and create a new if statement in the `for draw_hex_coords: Vector2i in draw_chunk_dict:` loop matching your tool. Brush patterns key hexes as `chunk_coords → local axial Vector2i → falloff sample`.
-* If your brush is elevation based, then you can code in the behaviour of the brush by setting the restore_value (value that gets used to undo an action) variable to `restore_value = chunk.get_elevation(draw_hex_coords)`, and the draw_value variable to the actual new integer level you calculated with the new behaviour. The matching setters on the chunk are `draw_elevation`, `draw_ground_slot`, `draw_wall_slot`, `draw_grass` and `draw_edge_transitions`, each with a `get_*` counterpart. You can now skip the other steps and test your new tool, but if you have other wishes for your tools, keep reading.
-* If your tool is brush based and does not modify the elevation you will need a pattern action for the undo/redo apparatus. Simple single-purpose actions work like `draw_grass_mask_pattern_action`; anything that combines several fields (e.g. quick paints) should go through `apply_composite_pattern_action` with a dictionary of pattern dictionaries keyed `"height"`, `"ground_slot"`, `"wall_slot"`, `"grass_mask"` or `"edges"`. In the same script you will need to create the function(s) that handle the new behaviour. To get a good idea of how to do this you can look through the plugin for the functions and variables related to the VERTEX_PAINT tool mode.
+* For brush related tools, first up you need to go to the `draw_pattern(terrain: MarchingSquaresTerrain)` function and create a new if statement in the `for draw_cell_coords: Vector2i in draw_chunk_dict:` loop matching your tool.
+* If your brush is height based, then you can code in the behaviour of the brush by setting the restore_value (value that gets used to undo an action) variable to `restore_value = chunk.get_height(draw_cell_coords)`, and the draw_value variable to the actual new height you calculated with the new behaviour. You can now skip the other steps and test your new tool, but if you have other wishes for your tools, keep reading.
+* If your tool is brush based and does not modify the height you will need to create a new undo_redo action. They should be at the end of the function where you have been working in up until now. Make sure to create a new elif statement that matching your tool mode. In the same script you will need to create a new function that handles the new behaviour. Depending on the intended behaviour you will need to write multiple new functions in several scripts that modify, retrieve and store all sorts of new variables. To get a good idea of how to do this you can look through the plugin for the functions and variables related to the VERTEX_PAINT tool mode.
 * If your tool is non-brush based and does things in the world based on the position of your mouse, then you can code in new behaviour in the `handle_mouse(camera: Camera3D, event: InputEvent) -> int` function under the `if intersection:` statement. Look at how the code for the CHUNK_MANAGEMENT tool mode is set up for examples.
-* For all the other tool types you will need to think of new ways to implement the behaviour. These make up the minority of the cases but one such tool is the TERRAIN_SETTINGS tool mode that only lets you interact with the editor and connects @export variables that store terrain data like wall color to the UI. The IMPORT_EXPORT tool is another example: it has no viewport interaction at all and only wires two TEXT path attributes and two BUTTON attributes that call `MSTJsonIO.export_to_json`/`import_from_json` from `_on_setting_changed`.
+* For all the other tool types you will need to think of new ways to implement the behaviour. These make up the minority of the cases but one such tool is the TERRAIN_SETTINGS tool mode that only lets you interact with the editor and connects @export variables that store terrain data like wall color to the UI.
 
 ## Adding Terrain Settings
 

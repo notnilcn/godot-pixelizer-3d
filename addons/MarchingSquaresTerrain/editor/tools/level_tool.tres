@@ -10,6 +10,8 @@ brush_type = true
 size = true
 height = true
 falloff = true
+grid_aligned = true
+grid_size = true
 quick_paint_selection = true
 metadata/_custom_type_script = "uid://b6jopat61dbd3"
 
@@ -22,6 +24,6 @@ tooltip = "Level Tool
 Used to level terrain to a certain height.
 
 [SHORTCUTS]
-• Ctrl+LMB: Set the terrain level height to the hovered cell's Y value."
+â€¢ Ctrl+LMB: Set the terrain level height to the hovered cell's Y value."
 attributes = SubResource("Resource_5ton1")
 metadata/_custom_type_script = "uid://brkjbcthwswel"

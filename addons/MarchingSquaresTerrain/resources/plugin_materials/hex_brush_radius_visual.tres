@@ -1,0 +1,7 @@
+[gd_resource type="PlaneMesh" format=3]
+
+[ext_resource type="Material" path="res://addons/MarchingSquaresTerrain/resources/plugin_materials/hex_brush_radius_material.tres" id="1_hexmat"]
+
+[resource]
+material = ExtResource("1_hexmat")
+size = Vector2(1, 1)

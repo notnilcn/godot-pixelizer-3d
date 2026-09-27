@@ -1,0 +1,24 @@
+[gd_resource type="ArrayMesh" format=3 uid="uid://crjjkgy7s6ie8"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_l6gq3"]
+render_priority = 11
+transparency = 1
+blend_mode = 1
+depth_draw_mode = 2
+no_depth_test = true
+shading_mode = 0
+albedo_color = Color(1, 0.87, 0.75, 0.5)
+
+[resource]
+resource_name = "tri_cell_visual"
+_surfaces = [{
+"aabb": AABB(-0.5, 0, -0.57735026, 1, 1e-05, 0.8660254),
+"format": 34359742465,
+"index_count": 3,
+"index_data": PackedByteArray(0, 0, 2, 0, 1, 0),
+"material": SubResource("StandardMaterial3D_l6gq3"),
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 3,
+"vertex_data": PackedByteArray(0, 0, 0, 191, 0, 0, 0, 0, 58, 205, 147, 62, 0, 0, 0, 63, 0, 0, 0, 0, 58, 205, 147, 62, 0, 0, 0, 0, 0, 0, 0, 0, 58, 205, 19, 191)
+}]

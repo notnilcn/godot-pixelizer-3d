@@ -1,4 +1,4 @@
-# This gizmo will have a handle for every hex in the chunk.
+# This gizmo will have a handle for every single height value.
 # Mostly for debugging.
 
 extends EditorNode3DGizmo
@@ -8,24 +8,24 @@ class_name MarchingSquaresTerrainChunkGizmo
 func _redraw():
 	clear()
 	
-	var chunk : MarchingSquaresTerrainChunk = get_node_3d()
+	var terrain : MarchingSquaresTerrainChunk = get_node_3d()
+	var dx := (terrain.dimensions.x - 1) * terrain.cell_size.x
+	var dz := (terrain.dimensions.z - 1) * terrain.cell_size.y
 	
 	# Only draw the gizmo if this is the only selected node
 	if len(EditorInterface.get_selection().get_selected_nodes()) != 1:
 		return
-	if EditorInterface.get_selection().get_selected_nodes()[0] != chunk:
+	if EditorInterface.get_selection().get_selected_nodes()[0] != terrain:
 		return
 	
-	# Handles for raising/lowering terrain (one per hex, at hex centers)
-	var hex_size := chunk.get_hex_size()
-	var level_height := chunk.get_level_height()
+	# Handles for raising/lowering terrain (will probably be removed later in favor of brush)
 	var corners := PackedVector3Array()
 	var ids := PackedInt32Array()
-	var offsets := MSTHexMath.hex_range(chunk.get_chunk_radius())
-	for i in range(offsets.size()):
-		var center_xz := MSTHexMath.hex_to_world(offsets[i].x, offsets[i].y, hex_size)
-		corners.append(Vector3(center_xz.x, chunk.get_elevation(offsets[i]) * level_height, center_xz.y))
-		ids.append(i)
+	for z in range(terrain.dimensions.z):
+		for x in range(terrain.dimensions.x):
+			var y = terrain.height_map[z][x]
+			corners.append(Vector3(x * terrain.cell_size.x, y, z * terrain.cell_size.y))
+			ids.append(z*terrain.dimensions.x + x)
 	add_handles(corners, get_plugin().get_material("handles", self), ids)
 
 
@@ -34,50 +34,61 @@ func _get_handle_name(handle_id: int, secondary: bool) -> String:
 
 
 func _get_handle_value(handle_id: int, secondary: bool) -> Variant:
-	var chunk : MarchingSquaresTerrainChunk = get_node_3d()
-	return chunk.get_elevation(_offset_for_handle(chunk, handle_id)) * chunk.get_level_height();
+	var terrain: MarchingSquaresTerrainChunk = get_node_3d()
+	var z = handle_id / terrain.dimensions.z
+	var x = handle_id % terrain.dimensions.z
+	return terrain.height_map[z][x];
 
 
 func _commit_handle(handle_id: int, secondary: bool, restore: Variant, cancel: bool) -> void:
-	var chunk : MarchingSquaresTerrainChunk = get_node_3d()
+	var terrain: MarchingSquaresTerrainChunk = get_node_3d()
+	var z = handle_id / terrain.dimensions.z
+	var x = handle_id % terrain.dimensions.z
 	
 	if cancel:
-		move_terrain_point(chunk, handle_id, restore)
+		terrain.height_map[z][x] = restore
+		terrain.mark_dirty()
 	else:
 		var undo_redo := MarchingSquaresTerrainPlugin.instance.get_undo_redo()
 		
-		var do_value : float = chunk.get_elevation(_offset_for_handle(chunk, handle_id)) * chunk.get_level_height()
+		var do_value = terrain.height_map[z][x]
 	
 		undo_redo.create_action("move terrain point")
-		undo_redo.add_do_method(self, "move_terrain_point", chunk, handle_id, do_value)
-		undo_redo.add_undo_method(self, "move_terrain_point", chunk, handle_id, restore)
+		undo_redo.add_do_method(self, "move_terrain_point", terrain, handle_id, do_value)
+		undo_redo.add_undo_method(self, "move_terrain_point", terrain, handle_id, restore)
 		undo_redo.commit_action()
 		
-	chunk.update_gizmos()
+	terrain.update_gizmos()
 
 
-func move_terrain_point(chunk: MarchingSquaresTerrainChunk, handle_id: int, height: float):
-	chunk.draw_elevation(_offset_for_handle(chunk, handle_id), int(round(height / chunk.get_level_height())))
-	chunk.regenerate_mesh()
-	chunk.update_gizmos()
+func move_terrain_point(terrain: MarchingSquaresTerrainChunk, handle_id: int, height: float):
+	var z = handle_id / terrain.dimensions.z
+	var x = handle_id % terrain.dimensions.z
+	terrain.height_map[z][x] = height
+	terrain.mark_dirty()
+	
+	notify_needs_update(terrain, z, x)
+	notify_needs_update(terrain, z, x-1)
+	notify_needs_update(terrain, z-1, x)
+	notify_needs_update(terrain, z-1, x-1)
+	
+	terrain.regenerate_mesh()
+	terrain.update_gizmos()
 
 
-# Handle ids index into the deterministic MSTHexMath.hex_range order.
-func _offset_for_handle(chunk: MarchingSquaresTerrainChunk, handle_id: int) -> Vector2i:
-	var offsets := MSTHexMath.hex_range(chunk.get_chunk_radius())
-	if handle_id < 0 or handle_id >= offsets.size():
-		return Vector2i.ZERO
-	return offsets[handle_id]
+func notify_needs_update(terrain: MarchingSquaresTerrainChunk, z: int, x: int):
+	if z < 0 or z >= terrain.dimensions.z-1 or x < 0 or x >= terrain.dimensions.x-1:
+		return
+	terrain.needs_update[z][x] = true
 
 
 func _set_handle(handle_id: int, secondary: bool, camera: Camera3D, screen_pos: Vector2) -> void:
-	var chunk : MarchingSquaresTerrainChunk = get_node_3d()
-	var offset := _offset_for_handle(chunk, handle_id)
-	var hex_size := chunk.get_hex_size()
-	var level_height := chunk.get_level_height()
-	var center_xz := MSTHexMath.hex_to_world(offset.x, offset.y, hex_size)
+	var terrain: MarchingSquaresTerrainChunk = get_node_3d()
+	var z = handle_id / terrain.dimensions.z
+	var x = handle_id % terrain.dimensions.z
+	var y = terrain.height_map[z][x]
 	# Get handle position
-	var handle_position = chunk.to_global(Vector3(center_xz.x, chunk.get_elevation(offset) * level_height, center_xz.y))
+	var handle_position = terrain.to_global(Vector3(x * terrain.cell_size.x, y, z * terrain.cell_size.y))
 	
 	# Convert mouse movement to 3D world coordinates using raycasting
 	var ray_origin = camera.project_ray_origin(screen_pos)
@@ -89,7 +100,7 @@ func _set_handle(handle_id: int, secondary: bool, camera: Camera3D, screen_pos: 
 	var intersection = plane.intersects_ray(ray_origin, ray_dir)
 	
 	if intersection:
-		intersection = chunk.to_local(intersection)
-		chunk.draw_elevation(offset, int(round(intersection.y / level_height)))
-		chunk.regenerate_mesh()
-		chunk.update_gizmos()
+		intersection = terrain.to_local(intersection)
+		terrain.height_map[z][x] = intersection.y
+		terrain.mark_dirty()
+		terrain.update_gizmos()

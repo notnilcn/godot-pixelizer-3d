@@ -10,6 +10,8 @@ brush_type = true
 size = true
 flatten = true
 falloff = true
+grid_aligned = true
+grid_size = true
 quick_paint_selection = true
 metadata/_custom_type_script = "uid://b6jopat61dbd3"
 
@@ -22,9 +24,9 @@ tooltip = "Brush Tool
 Used to elevate or lower terrain.
 
 [SHORTCUTS]
-• Shift+LMB+Drag: Add cells to the current draw selection.
-• Shift+MWU/MWD: Increase or decrease the brush size..
-• Alt/RMB/Esc: Reset the current draw selection.
+â€¢ Shift+LMB+Drag: Add cells to the current draw selection.
+â€¢ Shift+MWU/MWD: Increase or decrease the brush size..
+â€¢ Alt/RMB/Esc: Reset the current draw selection.
 These shortcuts apply to all brush related tools."
 attributes = SubResource("Resource_f0ade")
 metadata/_custom_type_script = "uid://brkjbcthwswel"

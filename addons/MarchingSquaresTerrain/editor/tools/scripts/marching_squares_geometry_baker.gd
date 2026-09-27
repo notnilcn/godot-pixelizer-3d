@@ -18,15 +18,7 @@ func bake_geometry_texture(inst: MeshInstance3D, scene_tree: SceneTree) -> void:
 	var arrays := mesh.surface_get_arrays(0)
 	
 	var verts : PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-	var indices : PackedInt32Array
-	if arrays[Mesh.ARRAY_INDEX] != null:
-		indices = arrays[Mesh.ARRAY_INDEX]
-	else:
-		# SurfaceTool meshes committed without index() have no index array
-		indices = PackedInt32Array()
-		indices.resize(verts.size())
-		for i in verts.size():
-			indices[i] = i
+	var indices : PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
 	var normals : PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
 	var c0 : PackedColorArray = _to_color_array(arrays[Mesh.ARRAY_CUSTOM0])
 	var c1 : PackedColorArray = _to_color_array(arrays[Mesh.ARRAY_CUSTOM1])

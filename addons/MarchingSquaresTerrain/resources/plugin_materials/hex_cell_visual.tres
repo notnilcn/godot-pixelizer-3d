@@ -1,0 +1,24 @@
+[gd_resource type="ArrayMesh" format=4 uid="uid://b7eu435a2qe0g"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_adumu"]
+render_priority = 11
+transparency = 1
+blend_mode = 1
+depth_draw_mode = 2
+no_depth_test = true
+shading_mode = 0
+albedo_color = Color(0.85, 0.9, 1, 0.5)
+
+[resource]
+resource_name = "hex_cell_visual"
+_surfaces = [{
+"aabb": AABB(-0.4330127, 0, -0.5, 0.8660254, 1e-05, 1),
+"format": 34359742465,
+"index_count": 18,
+"index_data": PackedByteArray("AgABAAAAAgAAAAMAAgADAAQAAgAEAAUAAgAFAAYAAgAGAAEA"),
+"material": SubResource("StandardMaterial3D_adumu"),
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 7,
+"vertex_data": PackedByteArray("17PdPgAAAAAAAIA+17PdPgAAAAAAAIC+AAAAAAAAAAAAAAAAADANJAAAAAAAAAA/17PdvgAAAAAAAIA+17PdvgAAAAAAAIC+AMjTpAAAAAAAAAC/")
+}]
