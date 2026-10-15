@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://c0e1rqbsmuvmv"
+path="res://.godot/imported/apply_pixelization.glsl-e7d6cb5f8d7318201ff639b231ac098a.res"
+
+[deps]
+
+source_file="res://addons/pixelizer_3d/shaders/compute/apply_pixelization.glsl"
+dest_files=["res://.godot/imported/apply_pixelization.glsl-e7d6cb5f8d7318201ff639b231ac098a.res"]
+
+[params]
+

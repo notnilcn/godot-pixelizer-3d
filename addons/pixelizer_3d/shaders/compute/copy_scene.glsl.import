@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://c2kw1f3bly2ut"
+path="res://.godot/imported/copy_scene.glsl-61d1185a6ca2427cbdd3a690bfd0f1b1.res"
+
+[deps]
+
+source_file="res://addons/pixelizer_3d/shaders/compute/copy_scene.glsl"
+dest_files=["res://.godot/imported/copy_scene.glsl-61d1185a6ca2427cbdd3a690bfd0f1b1.res"]
+
+[params]
+
