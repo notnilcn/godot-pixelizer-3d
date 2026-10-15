@@ -1,6 +1,6 @@
-[gd_resource type="PlaneMesh" format=3]
+[gd_resource type="PlaneMesh" format=3 uid="uid://dikg4yc17i6rh"]
 
-[ext_resource type="Material" path="res://addons/MarchingSquaresTerrain/resources/plugin_materials/hex_brush_radius_material.tres" id="1_hexmat"]
+[ext_resource type="Material" uid="uid://dh33rmf3vhcnr" path="res://addons/MarchingSquaresTerrain/resources/plugin_materials/hex_brush_radius_material.tres" id="1_hexmat"]
 
 [resource]
 material = ExtResource("1_hexmat")

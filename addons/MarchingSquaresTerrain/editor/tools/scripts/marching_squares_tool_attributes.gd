@@ -24,6 +24,10 @@ enum SettingType {
 var terrain_settings_data : Dictionary = {
 	"grid_type": "OptionButton",
 	"dimensions": "Vector3i",
+	# Hex-ring settings (shown instead of dimensions while GridType.HEX_RINGS is active)
+	"chunk_hex_radius": "SpinBox",
+	"wrap_chunk_cols": "SpinBox",
+	"wrap_chunk_rows": "SpinBox",
 	"cell_size": "Vector2",
 	"blend_mode": "OptionButton",
 	"noise_hmap": "EditorResourcePicker",
@@ -146,7 +150,7 @@ func _can_grid_align() -> bool:
 		return false
 	if t.grid_type == MarchingSquaresTerrain.GridType.SQUARE:
 		return false
-	if plugin.current_brush_index != 2:
+	if not BrushPatternCalculator.is_hexagon_brush(plugin.current_brush_index):
 		return false
 	return plugin.falloff == false
 
@@ -448,7 +452,21 @@ func add_setting(p_params: Dictionary) -> void:
 			hbox_container.add_child(cont, true)
 		SettingType.TERRAIN:
 			var vbox := VBoxContainer.new()
-			for setting in terrain_settings_data:
+			var terrain := plugin.current_terrain_node
+			var selected_settings : Array = terrain_settings_data.keys()
+			if terrain.grid_type == MarchingSquaresTerrain.GridType.HEX_RINGS:
+				# Hex-ring chunks are sized by chunk_hex_radius, so show it and the
+				# wrap settings in place of dimensions.
+				var dim_index : int = selected_settings.find("dimensions")
+				if dim_index >= 0:
+					selected_settings.remove_at(dim_index)
+					selected_settings.insert(dim_index, "chunk_hex_radius")
+					selected_settings.insert(dim_index + 1, "wrap_chunk_cols")
+					selected_settings.insert(dim_index + 2, "wrap_chunk_rows")
+			else:
+				for hex_ring_setting in ["chunk_hex_radius", "wrap_chunk_cols", "wrap_chunk_rows"]:
+					selected_settings.erase(hex_ring_setting)
+			for setting in selected_settings:
 				var editor_setting = terrain_settings_data[setting]
 				var s_value := plugin.current_terrain_node.get(setting)
 				
@@ -488,6 +506,14 @@ func add_setting(p_params: Dictionary) -> void:
 					"SpinBox":
 						var spin_box := SpinBox.new()
 						spin_box.value = plugin.current_terrain_node.get(setting)
+						if setting == "chunk_hex_radius":
+							spin_box.min_value = 1
+							spin_box.max_value = 8
+							spin_box.tooltip_text = "Radius (in cells) of each chunk's hex disk. Matches the server's chunk_hex_radius."
+						elif setting == "wrap_chunk_cols" or setting == "wrap_chunk_rows":
+							spin_box.min_value = 0
+							spin_box.max_value = 128
+							spin_box.tooltip_text = "Hex-ring torus lap size in chunks. 0 disables wrapping."
 						spin_box.value_changed.connect(func(value): _on_terrain_setting_changed(setting, value))
 						spin_box.set_custom_minimum_size(Vector2(25, 25))
 						
@@ -569,6 +595,7 @@ func add_setting(p_params: Dictionary) -> void:
 							option_button.add_item("Square")
 							option_button.add_item("Triangle")
 							option_button.add_item("Hexagon")
+							option_button.add_item("Hex Rings")
 						elif setting == "extra_collision_layer":
 							for i in range(24):
 								option_button.add_item(str(i+9))

@@ -1,0 +1,9 @@
+[gd_resource type="ShaderMaterial" format=3 uid="uid://bq6c87xvqtx2w"]
+
+[ext_resource type="Shader" uid="uid://ji4k6hf3boet" path="res://addons/MarchingSquaresTerrain/resources/shaders/triangle_brush_radius_visual.gdshader" id="1_trivis"]
+
+[resource]
+render_priority = 11
+shader = ExtResource("1_trivis")
+shader_parameter/falloff_visible = true
+shader_parameter/rotation = 3.1415927

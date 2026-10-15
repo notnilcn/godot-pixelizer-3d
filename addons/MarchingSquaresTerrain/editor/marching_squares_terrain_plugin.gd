@@ -5,17 +5,17 @@ class_name MarchingSquaresTerrainPlugin
 
 static var instance : MarchingSquaresTerrainPlugin
 
-const EMPTY_TEXTURE_PRESET : MarchingSquaresTexturePreset = preload("uid://db4scsn2nqqyu")
-const BrushPatternCalculator = preload("uid://bli1mnri3jwpa")
+const EMPTY_TEXTURE_PRESET : MarchingSquaresTexturePreset = preload("res://addons/MarchingSquaresTerrain/resources/empty_project.tres")
+const BrushPatternCalculator = preload("res://addons/MarchingSquaresTerrain/editor/utils/brush_pattern_calculator.gd")
 
-var vp_texture_names = preload("uid://dd7fens03aosa")
+var vp_texture_names = preload("res://addons/MarchingSquaresTerrain/resources/texture_names.tres")
 
 var gizmo_plugin := MarchingSquaresTerrainGizmoPlugin.new()
 var toolbar := MarchingSquaresToolbar.new()
 var tool_attributes := MarchingSquaresToolAttributes.new()
 var active_tool : int = 0
 
-var UI : Script = preload("uid://bmedudg6sllf8")
+var UI : Script = preload("res://addons/MarchingSquaresTerrain/editor/marching_squares_ui.gd")
 var ui : MarchingSquaresUI
 
 var is_initialized : bool = false
@@ -29,28 +29,36 @@ var selected_chunk : MarchingSquaresTerrainChunkBase
 var _syncing_from_terrain : bool = false
 
 #region brush variables
+# Hexagon30 (index 3) reuses the pointy-top hexagon visual; the gizmo rotates
+# its transform by 30 degrees so it renders flat-top.
 var BrushMode : Dictionary = {
-	"0" = preload("uid://cg3lvmu68oaaa"),
-	"1" = preload("uid://b6uwsa1vjeb4"),
+	"0" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/round_brush_radius_visual.tres"),
+	"1" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/square_brush_radius_visual.tres"),
 	"2" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/hex_brush_radius_visual.tres"),
+	"3" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/hex_brush_radius_visual.tres"),
+	"4" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/triangle_brush_radius_visual.tres"),
+	"5" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/triangle180_brush_radius_visual.tres"),
 }
 
 var BrushMat : Dictionary = {
-	"0" = preload("uid://dtevocyixqsgv"),
-	"1" = preload("uid://daofaifmtbyak"),
+	"0" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/round_brush_radius_material.tres"),
+	"1" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/square_brush_radius_material.tres"),
 	"2" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/hex_brush_radius_material.tres"),
+	"3" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/hex_brush_radius_material.tres"),
+	"4" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/triangle_brush_radius_material.tres"),
+	"5" = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/triangle180_brush_radius_material.tres"),
 }
 
 var current_brush_index : int = 0
 
 var brush_position : Vector3
 
-var BRUSH_VISUAL : Mesh = preload("uid://ch6cb07rh0m3l")
-var BRUSH_RADIUS_VISUAL : Mesh = preload("uid://cg3lvmu68oaaa")
-var BRUSH_RADIUS_MATERIAL : ShaderMaterial = preload("uid://dtevocyixqsgv")
+var BRUSH_VISUAL : Mesh = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/brush_visual.tres")
+var BRUSH_RADIUS_VISUAL : Mesh = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/round_brush_radius_visual.tres")
+var BRUSH_RADIUS_MATERIAL : ShaderMaterial = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/round_brush_radius_material.tres")
 var CELL_HEX_VISUAL : Mesh = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/hex_cell_visual.tres")
 var CELL_TRI_VISUAL : Mesh = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/tri_cell_visual.tres")
-@onready var falloff_curve : Curve = preload("uid://c0bexjsfvvcxb")
+@onready var falloff_curve : Curve = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/curve_falloff.tres")
 #endregion
 
 #region tool_mode vars
@@ -96,7 +104,7 @@ func grid_align_gate_passes() -> bool:
 		return false
 	if t.grid_type == MarchingSquaresTerrain.GridType.SQUARE:
 		return false
-	if current_brush_index != 2: # Hexagon brush only
+	if not BrushPatternCalculator.is_hexagon_brush(current_brush_index):
 		return false
 	return falloff == false
 
@@ -195,10 +203,10 @@ func _safe_initialize() -> bool:
 		initialization_error = "No tree detected while initializing"
 		return false
 	
-	var terrain_script := preload("uid://cddg1xr5hye1d")
-	var chunk_script := preload("uid://cql4d8s5t5xcx")
-	var terrain_icon := preload("uid://jfugomwkrm54")
-	var chunk_icon := preload("uid://dj8y22ded0j8r")
+	var terrain_script := preload("res://addons/MarchingSquaresTerrain/algorithm/terrain/marching_squares_terrain.gd")
+	var chunk_script := preload("res://addons/MarchingSquaresTerrain/algorithm/terrain/marching_squares_terrain_chunk.gd")
+	var terrain_icon := preload("res://addons/MarchingSquaresTerrain/editor/icons/Marching_Squares_Terrain_Icon.svg")
+	var chunk_icon := preload("res://addons/MarchingSquaresTerrain/editor/icons/Marching_Squares_Terrain_Chunk_Icon.svg")
 	
 	if terrain_script and chunk_script:
 		add_custom_type("MarchingSquaresTerrain", "Node3D", terrain_script, terrain_icon)
@@ -402,14 +410,8 @@ func handle_mouse(camera: Camera3D, event: InputEvent) -> int:
 					floori(draw_position.x / (terrain.dimensions.x * terrain.cell_size.x)),
 					floori(draw_position.z / (terrain.dimensions.z * terrain.cell_size.y)))
 			else:
-				var cells := terrain.cells_per_chunk()
-				var world_pos := Vector2(draw_position.x, draw_position.z)
-				var cell : Vector2i
-				if terrain.grid_type == MarchingSquaresTerrain.GridType.TRIANGLE:
-					cell = MarchingSquaresTriGrid.world_to_cell(world_pos, terrain.cell_size)
-				else:
-					cell = MarchingSquaresHexGrid.world_to_cell(world_pos, MarchingSquaresHexGrid.spacing_for(terrain.cell_size))
-				chunk_coords = MarchingSquaresHexGrid.chunk_of_cell(cell, cells)
+				chunk_coords = terrain.chunk_of_cell(
+					terrain.world_to_cell(Vector2(draw_position.x, draw_position.z)))
 			
 			is_chunk_plane_hovered = true
 			current_hovered_chunk = chunk_coords
@@ -477,7 +479,10 @@ func handle_mouse(camera: Camera3D, event: InputEvent) -> int:
 		
 		if draw_area_hovered and event is InputEventMouseMotion:
 			brush_position = draw_position
-			if is_drawing and (mode == TerrainToolMode.SMOOTH or mode == TerrainToolMode.VERTEX_PAINTING or mode == TerrainToolMode.GRASS_MASK):
+			# Smooth and vertex paint apply continuously while dragging. The
+			# other brush tools accumulate a selection in current_draw_pattern
+			# (through the gizmo) and apply it once on release.
+			if is_drawing and (mode == TerrainToolMode.SMOOTH or mode == TerrainToolMode.VERTEX_PAINTING):
 				draw_pattern(terrain)
 				current_draw_pattern.clear()
 		
@@ -496,14 +501,8 @@ func handle_mouse(camera: Camera3D, event: InputEvent) -> int:
 				floori(local_pos.x / ((terrain.dimensions.x-1) * terrain.cell_size.x)),
 				floori(local_pos.z / ((terrain.dimensions.z-1) * terrain.cell_size.y)))
 		else:
-			var cells := terrain.cells_per_chunk()
-			var world_pos := Vector2(local_pos.x, local_pos.z)
-			var cell : Vector2i
-			if terrain.grid_type == MarchingSquaresTerrain.GridType.TRIANGLE:
-				cell = MarchingSquaresTriGrid.world_to_cell(world_pos, terrain.cell_size)
-			else:
-				cell = MarchingSquaresHexGrid.world_to_cell(world_pos, MarchingSquaresHexGrid.spacing_for(terrain.cell_size))
-			chunk_coords = MarchingSquaresHexGrid.chunk_of_cell(cell, cells)
+			chunk_coords = terrain.chunk_of_cell(
+				terrain.world_to_cell(Vector2(local_pos.x, local_pos.z)))
 		
 		var chunk = terrain.chunks.get(chunk_coords)
 		
@@ -531,7 +530,12 @@ func handle_mouse(camera: Camera3D, event: InputEvent) -> int:
 			elif not chunk:
 				# Can add a new chunk here if there is a neighbouring non-empty chunk
 				# Also add if there are no chunks at all in the current terrain system
-				var can_add_empty : bool = terrain.chunks.is_empty() or terrain.has_chunk(chunk_coords.x-1, chunk_coords.y) or terrain.has_chunk(chunk_coords.x+1, chunk_coords.y) or terrain.has_chunk(chunk_coords.x, chunk_coords.y-1) or terrain.has_chunk(chunk_coords.x, chunk_coords.y+1)
+				var can_add_empty : bool = terrain.chunks.is_empty()
+				if not can_add_empty:
+					for neighbor_coords in terrain.chunk_neighbors(chunk_coords):
+						if terrain.chunks.has(neighbor_coords):
+							can_add_empty = true
+							break
 				if can_add_empty:
 					get_undo_redo().create_action("add chunk")
 					get_undo_redo().add_do_method(terrain, "add_new_chunk", chunk_coords.x, chunk_coords.y, self)
@@ -599,16 +603,15 @@ func update_draw_pattern(b_pos: Vector3):
 
 ## Cell-mode variant of update_draw_pattern. Mirrors the gizmo's cell preview.
 func _update_draw_pattern_cells(terrain_system: MarchingSquaresTerrain, brush_pos: Vector2) -> void:
-	var cells := terrain_system.cells_per_chunk()
 	var max_distance : float = BrushPatternCalculator.calculate_max_distance(brush_size, current_brush_index)
 	
 	# Grid aligned selection sets every selected cell to 1.0 (no falloff).
 	if grid_aligned and grid_align_gate_passes():
 		for global in BrushPatternCalculator.grid_aligned_cells(terrain_system, brush_pos, grid_size):
-			var chunk_coords := MarchingSquaresHexGrid.chunk_of_cell(global, cells)
+			var chunk_coords := terrain_system.chunk_of_cell(global)
 			if not terrain_system.chunks.has(chunk_coords):
 				continue
-			var local := MarchingSquaresHexGrid.local_cell(global, cells)
+			var local := terrain_system.local_cell(global)
 			if not current_draw_pattern.has(chunk_coords):
 				current_draw_pattern[chunk_coords] = {}
 			current_draw_pattern[chunk_coords][local] = 1.0
@@ -618,7 +621,7 @@ func _update_draw_pattern_cells(terrain_system: MarchingSquaresTerrain, brush_po
 		var candidates := BrushPatternCalculator.cell_candidates_for_chunk(
 			chunk_coords, terrain_system, brush_pos, brush_size, 2)
 		for local: Vector2i in candidates:
-			var global := chunk_coords * cells + local
+			var global := terrain_system.global_of_local(chunk_coords, local)
 			var center := BrushPatternCalculator.cell_center_for(terrain_system, global)
 			var sample : float
 			if terrain_system.grid_type == MarchingSquaresTerrain.GridType.TRIANGLE:
@@ -630,7 +633,7 @@ func _update_draw_pattern_cells(terrain_system: MarchingSquaresTerrain, brush_po
 				sample = BrushPatternCalculator.hex_cell_sample(
 					brush_pos, center, brush_size, current_brush_index,
 					max_distance, falloff, falloff_curve,
-					MarchingSquaresHexGrid.world_to_cell(brush_pos, spacing), spacing)
+					terrain_system.cell_center_of(terrain_system.world_to_cell(brush_pos)), spacing)
 			if sample < 0:
 				continue
 			if not current_draw_pattern.has(chunk_coords):
@@ -1119,7 +1122,7 @@ func draw_pattern_cells(terrain: MarchingSquaresTerrain) -> void:
 		var draw_chunk_dict : Dictionary = current_draw_pattern[draw_chunk_coords]
 		for draw_cell_coords: Vector2i in draw_chunk_dict:
 			var sample : float = clamp(draw_chunk_dict[draw_cell_coords], 0.001, 0.999)
-			var global := draw_chunk_coords * terrain.cells_per_chunk() + draw_cell_coords
+			var global := terrain.global_of_local(draw_chunk_coords, draw_cell_coords)
 			var restore_value
 			var draw_value
 			match mode:
@@ -1327,8 +1330,8 @@ func _collect_cell_affected_chunks(terrain: MarchingSquaresTerrain, pattern: Dic
 	var affected : Dictionary = {}
 	for chunk_coords: Vector2i in pattern.keys():
 		affected[chunk_coords] = true
-		for offset in [Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1)]:
-			affected[chunk_coords + offset] = true
+		for neighbor_coords in terrain.chunk_neighbors(chunk_coords):
+			affected[neighbor_coords] = true
 	var result : Array = []
 	for coords in affected.keys():
 		if terrain.chunks.has(coords):

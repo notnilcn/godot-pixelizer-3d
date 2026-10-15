@@ -233,7 +233,7 @@ func bake_geometry_texture(inst: MeshInstance3D, scene_tree: SceneTree) -> void:
 		| Mesh.ARRAY_FORMAT_CUSTOM3 
 		| (Mesh.ARRAY_CUSTOM_RGB_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM3_SHIFT))
 	var mat := ShaderMaterial.new()
-	mat.shader = load("uid://b32t80p1iesdd") as Shader
+	mat.shader = load("res://addons/MarchingSquaresTerrain/resources/shaders/mst_terrain_bake.gdshader") as Shader
 	_transfer_shader_props(mesh.surface_get_material(0), mat)
 	bake_mesh.surface_set_material(0, mat)
 	

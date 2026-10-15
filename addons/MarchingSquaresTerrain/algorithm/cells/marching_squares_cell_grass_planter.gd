@@ -72,6 +72,13 @@ func generate_grass_on_cell(local: Vector2i) -> void:
 		# Instance buffer is stale (subdivisions changed): skip until setup runs.
 		return
 	
+	if not _chunk.has_cell(local):
+		# Bounding-box corners of a hex-ring chunk are not real cells.
+		while index < end_index:
+			_hide_grass_instance(index)
+			index += 1
+		return
+	
 	var texture_id := _get_texture_id(_chunk.get_color_0(local), _chunk.get_color_1(local))
 	var mask := _chunk.get_grass_mask(local)
 	var is_masked : bool = mask.r < 0.9999
@@ -84,7 +91,7 @@ func generate_grass_on_cell(local: Vector2i) -> void:
 			index += 1
 		return
 	
-	var global := _chunk.chunk_coords * _chunk.cells_per_chunk() + local
+	var global := _chunk.global_cell(_chunk.chunk_coords, local, _chunk.cells_per_chunk())
 	var origin := _chunk.get_chunk_origin_world()
 	var center := _chunk.cell_center_world(global) - origin
 	var offsets := _chunk.cell_corner_offsets(global)
@@ -250,6 +257,9 @@ func _terrain_world_extent() -> Vector2:
 			terrain_system.dimensions.x * terrain_system.cell_size.x,
 			terrain_system.dimensions.z * MarchingSquaresTriGrid.row_height(terrain_system.cell_size))
 	var spacing := MarchingSquaresHexGrid.spacing_for(terrain_system.cell_size)
+	if terrain_system.grid_type == MarchingSquaresTerrain.GridType.HEX_RINGS:
+		var cells := terrain_system.cells_per_chunk()
+		return Vector2(cells.x * spacing.x, cells.y * spacing.y)
 	return Vector2(
 		terrain_system.dimensions.x * spacing.x,
 		terrain_system.dimensions.z * spacing.y)

@@ -3,9 +3,9 @@ extends Node
 class_name MarchingSquaresUI
 
 
-const TOOLBAR : Script = preload("uid://3d77dnetkeik")
-const TOOL_ATTRIBUTES : Script = preload("uid://buxevb44hutjm")
-const TEXTURE_SETTINGS : Script = preload("uid://blvx0jk6wxk5p")
+const TOOLBAR : Script = preload("res://addons/MarchingSquaresTerrain/editor/tools/scripts/marching_squares_toolbar.gd")
+const TOOL_ATTRIBUTES : Script = preload("res://addons/MarchingSquaresTerrain/editor/tools/scripts/marching_squares_tool_attributes.gd")
+const TEXTURE_SETTINGS : Script = preload("res://addons/MarchingSquaresTerrain/editor/tools/scripts/marching_squares_texture_settings.gd")
 
 #region texture setting property maps
 # Property names that map directly to terrain properties with same name
@@ -209,9 +209,21 @@ func _on_terrain_setting_changed(p_setting_name: String, p_value: Variant) -> vo
 		"grid_type":
 			if p_value is int:
 				terrain.grid_type = p_value as MarchingSquaresTerrain.GridType
+				# Hex-ring mode swaps dimensions for radius/wrap fields, so rebuild
+				# the panel with the settings that match the new grid type.
+				tool_attributes.show_tool_attributes(active_tool)
 		"dimensions":
 			if p_value is Vector3i:
 				terrain.dimensions = p_value
+		"chunk_hex_radius":
+			if p_value is int or p_value is float:
+				terrain.chunk_hex_radius = int(p_value)
+		"wrap_chunk_cols":
+			if p_value is int or p_value is float:
+				terrain.wrap_chunk_cols = int(p_value)
+		"wrap_chunk_rows":
+			if p_value is int or p_value is float:
+				terrain.wrap_chunk_rows = int(p_value)
 		"cell_size":
 			if p_value is Vector2:
 				terrain.cell_size = p_value

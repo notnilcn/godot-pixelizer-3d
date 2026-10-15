@@ -31,7 +31,7 @@ var global_position_cached : Vector3 = Vector3.ZERO
 
 var cell_generation_mutex : Mutex = Mutex.new()
 
-var bake_material : ShaderMaterial = preload("uid://cbbvkbnwmr2em")
+var bake_material : ShaderMaterial = preload("res://addons/MarchingSquaresTerrain/resources/plugin_materials/mst_terrain_baked.tres")
 
 #region chunk variables
 # Size of the 2 dimensional cell array (xz value) and y scale (y value)

@@ -1,4 +1,4 @@
-@icon("uid://b0dphglel57ak")
+@icon("res://addons/MarchingSquaresTerrain/editor/icons/toolicon.svg")
 extends Resource
 class_name MarchingSquaresTool
 

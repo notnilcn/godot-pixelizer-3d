@@ -13,7 +13,7 @@ static func generate_terrain_uid() -> String:
 #region directory management
 
 ## Per-mode data folder names. Must match MarchingSquaresTerrain.GridType order.
-const MODE_NAMES : Array[String] = ["square", "triangle", "hex"]
+const MODE_NAMES : Array[String] = ["square", "triangle", "hex", "hex_rings"]
 
 
 ## Folder name for the terrain's active grid type.
@@ -46,6 +46,8 @@ static func ensure_directory_exists(path: String) -> bool:
 ## Path format: [SceneDir]/[SceneName]_TerrainData/[NodeName]_[data_UID]/
 static func generate_data_directory(terrain: MarchingSquaresTerrain) -> String:
 	# generate default path based on scene location with unique data_UID
+	if not terrain.is_inside_tree():
+		return ""  # Node not in scene tree yet
 	var tree := terrain.get_tree()
 	if not tree:
 		return ""  # Node not in scene tree yet
@@ -672,6 +674,8 @@ static func _texture_idx_to_colors(idx: int) -> Array:
 ## Clean up terrain data directories for terrains that no longer exist in the scene.
 ## Called during save to prevent disk bloat from deleted terrains.
 static func cleanup_orphaned_terrain_directories(terrain: MarchingSquaresTerrain) -> void:
+	if not terrain.is_inside_tree():
+		return
 	var tree := terrain.get_tree()
 	if not tree:
 		return
@@ -720,6 +724,10 @@ static func cleanup_orphaned_terrain_directories(terrain: MarchingSquaresTerrain
 
 ## Recursively collect terrain data dirs from scene tree.
 static func _collect_terrain_dirs_recursive(node: Node, dirs: Dictionary[String, Array] = {}) -> Dictionary[String, Array]:
+	if node == null:
+		# No edited scene root (e.g. editor tooling running before a scene is
+		# open): treat the directory as unused rather than erroring.
+		return dirs
 	var terrain := node as MarchingSquaresTerrain
 	if terrain and not terrain.data_directory.is_empty():
 		var simplified_path := terrain.data_directory.simplify_path()

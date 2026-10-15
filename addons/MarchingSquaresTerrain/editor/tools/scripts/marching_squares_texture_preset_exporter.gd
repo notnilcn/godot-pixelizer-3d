@@ -4,7 +4,7 @@ class_name MarchingSquaresTexturePresetExporter
 
 
 const PRESET_DIR = "res://addons/MarchingSquaresTerrain/resources/texture_presets/"
-const TEXTURE_NAMES = preload("uid://dd7fens03aosa")
+const TEXTURE_NAMES = preload("res://addons/MarchingSquaresTerrain/resources/texture_names.tres")
 
 var current_terrain_node : MarchingSquaresTerrain
 

@@ -80,6 +80,12 @@ func _build_ui() -> void:
 
 	_status = Label.new()
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# An autowrap label reports a minimum height computed for whatever width it
+	# was last shaped at; at dock startup that width is tiny, so a long status
+	# line would report a thousands-of-pixels minimum and inflate the whole
+	# editor dock layout (hiding the FileSystem dock and bottom panel). Cap the
+	# reported lines so the status can never dictate the dock's minimum size.
+	_status.max_lines_visible = 3
 	add_child(_status)
 
 	_tree = Tree.new()

@@ -1,6 +1,6 @@
-[gd_resource type="ShaderMaterial" format=3]
+[gd_resource type="ShaderMaterial" format=3 uid="uid://dh33rmf3vhcnr"]
 
-[ext_resource type="Shader" path="res://addons/MarchingSquaresTerrain/resources/shaders/hex_brush_radius_visual.gdshader" id="1_hexvis"]
+[ext_resource type="Shader" uid="uid://28giab83wceq" path="res://addons/MarchingSquaresTerrain/resources/shaders/hex_brush_radius_visual.gdshader" id="1_hexvis"]
 
 [resource]
 render_priority = 11
