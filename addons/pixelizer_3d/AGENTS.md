@@ -30,15 +30,16 @@ PixelizerPointLightVolume3D
 | Node | Use |
 |---|---|
 | `PixelizerApplier3D` | The entry point. Binds supported geometry in its subtree; nested appliers own their subtree. Resolves the manager explicitly (sibling `PixelizerManager3D` at the top level). |
-| `PixelizerManager3D` | One per viewport. Shared services (metadata viewport, compositor, camera, palette, cloud field, sun, object profiles). **Must be placed explicitly and named `PixelizerManager3D`.** |
+| `PixelizerManager3D` | One per **process**. Shared services (metadata viewport, compositor, camera, outline palette registry, cloud field, sun, object profiles) plus `settings`. **Must be placed explicitly and named `PixelizerManager3D`.** A second live manager warns (the pipeline globals are global shader uniforms). |
+| `PixelizerSettings` | Per-scene look `Resource` (`manager.settings`, auto-created when unset). Swappable per camera. |
 | `PixelizerObjectProfile` | Per-object override `Resource` owned by the manager (`object_profiles`), pointing at its geometry target. Replaces the old child node. |
-| `PixelizerDiagnosticsOverlay` | HUD + runtime tuner (manager groups, scene-effect panels, object inspector), toggle `Tab`. |
+| `PixelizerDiagnosticsOverlay` | HUD + runtime tuner (manager groups, the settings "Look" sections, scene-effect panels, object inspector), toggle `Tab`. |
 
 Supported targets: `MeshInstance3D`, `MultiMeshInstance3D`, `GPUParticles3D`, `CPUParticles3D`. Instance uniforms are per node, so sub-instances/particles share the node's pixel size and outline id.
 
 ## Inherit sentinel
 
-A property equal to the manager's `inherit_sentinel` (default `PixelizerInherit.INHERIT == -1`) falls through to the parent applier, then the manager default, then the built-in default. The sentinel is adjustable on the manager but **must stay negative** (it is validated by a configuration warning), so it can never collide with a real value.
+A property equal to the manager's `inherit_sentinel` (default `PixelizerInherit.INHERIT == -1`) falls through to the parent applier, then the manager's `settings` defaults (`default_pixel_size`, `default_dither_enabled`, `default_outline_enabled`, `default_mover_snap`), then the built-in default. The sentinel is adjustable on the manager but **must stay negative** (it is validated by a configuration warning), so it can never collide with a real value.
 
 `PixelizerApplier3D` inheritable fields: `pixel_size`, `palette_enabled`, `dither_enabled`, `anchor_mode`, `outline_enabled`, `shadow_casting`, `mover_snap`. Other fields: `outline_id` (sentinel = auto-allocate), `override_outline_color`/`outline_color`, `rescan_interval`, `ignore_group` (default `pixelizer_ignore`), `enabled` (live), `manager`.
 
@@ -53,13 +54,14 @@ Add a `PixelizerObjectProfile` to the manager's `object_profiles` array. Set `ta
 - Resolution: `PixelizerManager3D.resolve_manager_explicit(node)` — ancestor applier's manager → manager ancestor → sibling named `PixelizerManager3D` → null.
 - Custom shaders: `register_pixelized_material(mat)` / `unregister_pixelized_material(mat)`. Opted-in materials include `anchor_macros.gdshaderinc` and are never replaced by the factory.
 - Mover snap: `register_mover(node)` / `unregister_mover(node)`. Vertex-stage lattice snap; **orthographic only** and only with `PER_OBJECT` anchors (a `push_error` reports either mismatch). The mesh must run a pixelizer material.
-- Outlines: `set_outline_color(id, color)` (both silhouette + inner rows; the colour's alpha is the row opacity — `0` hides the outline), `set_outline_enabled(id, enabled)`, `allocate_outline_id()`, `outline_palette`.
+- Outlines: `set_outline_color(id, color)` (both silhouette + inner rows; the colour's alpha is the row opacity — `0` hides the outline; id 255 is the focus subject's row), `set_outline_enabled(id, enabled)`, `allocate_outline_id()`, `outline_palette` / `get_outline_texture()` / `get_outline_multiply_mode()`.
 - Focus: `focus_subtree(root)` / `unfocus_subtree(root)`, or `auto_focus` + `auto_focus_target`.
-- Clouds: `register_cloud_provider(obj)`, `register_cloud_material(mat)`, `unregister_cloud_material(mat)`, `get_cloud_params()`.
+- Clouds: `register_cloud_provider(obj)`, `register_cloud_material(mat)`, `unregister_cloud_material(mat)`, `get_cloud_params()`. Providers may set `cloud_camera_scope` to be active only for one camera; a second registration warns, and two cameras visible at once share one field.
 - Sun: an explicit `sun` wins; otherwise the manager binds the first **sibling** `DirectionalLight3D` (several siblings is ambiguous and warned; none is a `push_error`).
 - Object profiles: `object_profiles`, `register_object_profile(profile, target)`, `unregister_object_profile(profile)`, `get_object_profile(geometry)`.
 - Compositor slots: `add_pre_pixelization_effect(effect)` / `remove_pre_pixelization_effect(effect)`. `PixelizerGodRays3D` owns its pass through this slot.
-- Key fields: `enabled`, `mode` (`ANCHOR`/`LOW_RES`), `render_resolution`, `texel_density`, `view_zoom`, `manage_camera_size`, `pixel_size`, `depth_occlusion`, `snap_camera`, `snap_origin`, `sun`, `inherit_sentinel`, `editor_preview`, `global_palette_lut`, `dither_enabled`, `outline_enabled`, `outline_threshold`, `debug_view`, `bridge_manifests`, `auto_bridge_custom_shaders`.
+- Key manager fields (wiring and node references): `enabled`, `mode` (`ANCHOR`/`LOW_RES`), `sun`, `snap_origin`, `auto_focus_target`, `inherit_sentinel`, `editor_preview`, `metadata_layer`, `object_profiles`, `bridge_manifests`, `auto_bridge_custom_shaders`, `debug_view`.
+- Look fields live in `PixelizerSettings` (`manager.settings`, auto-created when unset; `get_settings()`): `render_resolution`, `texel_density`, `view_zoom`, `manage_camera_size`, `default_pixel_size`, `depth_occlusion`, `default_mover_snap`, `global_palette_lut` (kept reachable on the manager too — main-client contract), `default_dither_enabled`, `snap_camera`, `lock_camera`, `default_outline_enabled`, `default_outline_color`, `outline_threshold`, `outline_interior_threshold`, `outline_normal_threshold`, `outline_palette`, `auto_focus`, `debug_focus_mask`. Swapping the resource gives a camera its own look; writing a field notifies the manager (`settings_changed`), which re-publishes globals and re-derives every applier subtree.
 
 ## Editor preview
 

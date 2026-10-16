@@ -37,11 +37,11 @@ written back so foreground geometry still occludes correctly. Because it is a
 compositor effect, the pixel look composites with everything else — UI, 3D, and
 any shader you write — while your scene stays a normal Godot scene.
 
-The result stays **stable while the camera moves** (a phase-anchored orthographic
-snap), keeps its colour identity (a 16³ palette LUT with 16 ordered-dither
-bands), and works on **ordinary materials** with no scene changes: parent your
-world under one applier, and every mesh beneath it is pixelized. The shared
-manager (metadata viewport, compositor, camera follow) is created for you.
+The result stays **stable while the camera moves** (a phase-anchored texel snap)
+and works on **ordinary materials**: parent your world under one applier, and
+every mesh beneath it is pixelized. Wiring is explicit — one
+`PixelizerManager3D` per viewport, plus one `PixelizerApplier3D` per subtree you
+want pixelized.
 
 ## Feature tour
 
@@ -70,7 +70,9 @@ opt out of the silhouette tint into a reserved **focus** id.
 Bake a 16³-colour LUT (256×256, 16 dither bands) and the shader grades every
 pixelized fragment into it, with the dither band driven by the macro grid
 (never screen space, so it scrolls with the world, not the camera). Grading runs
-after the anchor clip, so the palette rides the pixel blocks.
+after the anchor clip, so the palette rides the pixel blocks. Grading is applied
+to the **albedo**, so lighting, cloud shadows and emission still act on top of
+the graded colour — the palette constrains colour, not the final brightness.
 
 ### A 3-pass compositor pipeline
 
@@ -102,38 +104,45 @@ inline in the apply pass (one full-screen dispatch fewer).
   (with a sharp-bilinear upscale and smooth sub-texel scroll) when you don't
   need per-object sizes.
 
-### A status HUD, tuned from the editor
+### A status HUD and a runtime tuner
 
-Enable `PixelizerDiagnosticsOverlay` and press `Tab` in game for a live status
-readout (pipeline state, pixel size, ray/palette flags, FPS, draw calls). Live
-tuning is done through Godot's remote inspector, not an in-game panel.
+`PixelizerDiagnosticsOverlay` is a `CanvasLayer` that hosts a one-line status
+readout (pipeline state, pixel size, ray/palette flags, FPS, draw calls) plus two
+runtime tuning docks: a manager/effect dock on the right (one foldable panel per
+export group of the resolved manager and of each scene effect node) and an
+object inspector on the left. Press `Tab` to toggle it.
 
 <p align="center">
-  <img src="docs/images/demo-diagnostics.png" alt="PixelizerDiagnosticsOverlay status HUD" width="820">
+  <img src="docs/images/demo-diagnostics.png" alt="PixelizerDiagnosticsOverlay status line, manager/effect tuner dock and object inspector" width="820">
 </p>
+
+> The status line and the tuner are best-effort tools, not a supported API.
+> Several manager/effect exports are read only during setup, so their sliders
+> have no effect at runtime — see the "diagnostics overlay" section of
+> [`AGENTS.md`](AGENTS.md) for which ones.
 
 ## Quick start
 
 1. Copy `addons/pixelizer_3d/` into your Godot 4.7 project and enable the plugin
    in **Project Settings → Plugins**.
-2. Add a `PixelizerApplier3D` and parent your world content under it. The
-   applier creates the shared `PixelizerManager3D` for the viewport when the
-   scene has none.
-3. Optionally place a `PixelizerManager3D` yourself to author shared settings
-   (palette LUT, resolution, `sun`, bridge manifests) in the scene. It
-   auto-follows the viewport's current `Camera3D`, so switching
-   cameras at runtime just works (call `set_target_camera()` to pin one).
+2. Add a `PixelizerManager3D` node and rename it to exactly
+   `PixelizerManager3D` (top-level appliers and effects resolve it by sibling
+   name). One manager per viewport.
+3. Add a `PixelizerApplier3D` as a sibling and parent your world content under
+   it. A top-level applier resolves the sibling manager; a nested applier
+   resolves its parent applier's manager. **No manager, no pixelization** — the
+   addon never creates one, and reports the missing node.
 
 ```gdscript
 var applier := PixelizerApplier3D.new()
 applier.pixel_size = 3
-applier.anchor_mode = PixelizerObject3D.AnchorMode.UNIFIED
-add_child(applier)
+applier.anchor_mode = 1  # UNIFIED (see PixelizerGeometryState.anchor_mode)
+add_child(applier)       # 'applier' must be a sibling of the manager
 applier.add_child(my_model)
 # anything parented under `applier` is now pixelized
 
-# shared pipeline settings live on the auto-created manager:
-applier.manager.sun = sun
+# shared pipeline settings live on the manager you placed:
+manager.sun = sun
 
 # Optional effects are separate scene nodes — add only what the scene needs:
 #   PixelizerSkyClouds3D (cloud shadows / deck), PixelizerGodRays3D,
@@ -146,8 +155,12 @@ register the material:
 ```gdscript
 # in your .gdshader:
 #   #include "res://addons/pixelizer_3d/shaders/anchor_macros.gdshaderinc"
-applier.manager.register_pixelized_material(my_material)
+manager.register_pixelized_material(my_material)
 ```
+
+> Unregistered custom `ShaderMaterial`s are left exactly as authored (a
+> pixelizer material cannot preserve an arbitrary shader), and the node they sit
+> on is skipped. Register them as above, or bridge them (see below).
 
 > Requirements: Godot **4.7**, **Forward+**, MSAA/TAA off. Compatibility and
 > headless fall back with a warning (low-res mode still runs on Mobile).
@@ -160,12 +173,8 @@ This repository is also the reference project — open it in Godot 4.7 and press
 You play a **Knight** (`CharacterBody3D` + arcball camera) in a
 `MarchingSquaresTerrain` bowl with a grass planter, six KayKit adventurer
 characters lined up in the distance, a firefly swarm, a point-light volume, a
-sky cloud deck and a water plane — all sitting under a `PixelizerApplier3D`
+sky cloud deck and a water tile — all sitting under a `PixelizerApplier3D`
 (the demo also places a `PixelizerManager3D` explicitly for its bridge settings).
-
-<p align="center">
-  <img src="docs/images/demo-water.png" alt="Water, cloud shadows and fireflies in the demo" width="820">
-</p>
 
 **Controls**
 
@@ -175,15 +184,18 @@ sky cloud deck and a water plane — all sitting under a `PixelizerApplier3D`
 | `Space` | Jump |
 | Arrow keys | Orbit camera (yaw / pitch) |
 | Mouse drag | Orbit camera |
-| Wheel | Zoom (2–14 m) |
-| `Tab` | Toggle the `PixelizerDiagnosticsOverlay` status HUD |
+| Wheel | Zoom (`min_distance`–`max_distance`, 2–60 m) |
+| `Tab` | Toggle the `PixelizerDiagnosticsOverlay` |
 
 The demo is wired to the **shader bridge**: the vendored
 `MarchingSquaresTerrain` shaders are approved and generated into
-`res://pixelizer_bridges/` (a generated artifact — delete it and rerun
-`tests/bridge/generate_bridges.gd` to rebuild). The terrain applier uses
-`pixel_size = 5`, `UNIFIED` anchor mode and a black outline override so the
-chunk seams stay invisible.
+`res://pixelizer_bridges/` (a generated artifact). Rebuild it with the bridge
+dock (**Project → Tools → Pixelizer3D Shader Bridge**), which preserves the
+manifest's approved entries. `tests/bridge/generate_bridges.gd` is **not** a
+substitute: it writes a new three-entry manifest over the production one and
+uses flat output paths the dock does not read. The terrain applier uses
+`pixel_size = 5`, `UNIFIED` anchor mode and `outline_enabled = 0` so the chunk
+seams and elevation steps stay uninked.
 
 ## Shader bridge
 
@@ -205,38 +217,30 @@ Stale, unapproved, missing-output or version-mismatched entries are never
 applied. The failure mode is always "rendered as authored", never a broken
 shader.
 
-<p align="center">
-  <img src="docs/images/editor-bridge-dock.png" alt="Pixelizer3D Shader Bridge dock" width="820">
-</p>
-
 ## Editor integration
 
 The addon adds a bridge dock and registers the **Bake PaletteLUT to PNG** tool.
 Every node exposes its settings as inspector export groups, and the applier
 options inherit cleanly down the tree.
 
-<p align="center">
-  <img src="docs/images/editor-scene.png" alt="The demo scene tree in the Godot editor" width="430">
-  <img src="docs/images/editor-manager-inspector.png" alt="PixelizerManager3D inspector" width="430">
-</p>
-
 ## Nodes at a glance
 
 | Node | What it does |
 |---|---|
-| `PixelizerApplier3D` | The entry point: subtree pixelizer with inheritable per-group settings. Creates the manager when the scene has none. |
-| `PixelizerManager3D` | The pipeline driver (metadata viewport/camera, compositor passes, shared settings). Auto-created by appliers; place one to author shared settings in the scene. Auto-follows the active camera. One per viewport. |
-| `PixelizerObject3D` | **Manual-only** per-object override node (place one as a child of a supported geometry node). |
+| `PixelizerApplier3D` | The entry point: subtree pixelizer with inheritable per-group settings. Resolves the manager (sibling `PixelizerManager3D` at the top level, else the parent applier's). |
+| `PixelizerManager3D` | The pipeline driver (metadata viewport/camera, compositor passes, shared settings). **Place one explicitly** and name it exactly `PixelizerManager3D`. Auto-follows the viewport's active camera. One per viewport. |
+| `PixelizerObjectProfile` | Per-object override `Resource`, owned by the manager's `object_profiles` array and pointing at its target geometry. |
 | `PixelizerSkyClouds3D` · `PixelizerGodRays3D` · `PixelizerWater3D` · `PixelizerPointLightVolume3D` · `PixelizerFireflies3D` · `PixelizerDayNight3D` | Optional per-scene effect nodes (add only what you need). |
-| `PixelizerCameraController3D` · `PixelizerDiagnosticsOverlay` | Optional camera rig and status HUD. |
+| `PixelizerDiagnosticsOverlay` | Optional status HUD + runtime tuner docks (`Tab`). |
 
 ## Repository layout
 
 ```
 addons/pixelizer_3d/   the addon (copy this into your project)
+addons/MarchingSquaresTerrain/  vendored terrain addon (upstream, unmodified)
 demo/                  the playable demo scene and assets
 pixelizer_bridges/     generated bridge shaders + manifest (demo)
-tests/                 capture harness + headless bridge fixtures
+tests/bridge/          headless bridge fixtures + windowed compile smoke test
 docs/images/           screenshots used in this README
 AGENTS.md              architecture and load-bearing invariants
 CREDITS.md             inspiration, assets and licenses
@@ -244,8 +248,10 @@ CREDITS.md             inspiration, assets and licenses
 
 ## Tests
 
-Headless shader-bridge fixtures, capture regression tooling and a windowed
-compile smoke test all live in `tests/` — see [`tests/README.md`](tests/README.md).
+Headless shader-bridge fixtures (`tests/bridge/bridge_fixtures.gd`), a windowed
+compile smoke test for the generated shaders, and a standalone PNG diff tool
+(`tests/compare_captures.py`) live in `tests/` — see
+[`tests/README.md`](tests/README.md).
 
 ## Credits
 

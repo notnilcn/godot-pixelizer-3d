@@ -89,6 +89,12 @@ object's own pivot.
 The manager's `editor_preview` toggle runs the pipeline live in the editor 3D
 viewport; preview binds are restored before the scene is saved.
 
+Look (resolution model, palette, outline tuning, snap toggles and the applier
+inherit defaults) lives in the `PixelizerSettings` resource on
+`PixelizerManager3D.settings` (auto-created when unset), so a scene can swap it
+per camera; manager fields left on the node are wiring and node references
+(`sun`, `snap_origin`, `auto_focus_target`) plus `debug_view`.
+
 See `nodes/pixelizer_manager_3d.gd` for the full export set and the generic
 `register_*` slots (`register_cloud_provider`, `register_cloud_material`,
 `register_pixelized_material`, `register_mover`, `register_object_profile`). The
@@ -121,10 +127,11 @@ The core runtime/config nodes live in `nodes/`; the optional effects in
 
 | Node | Role |
 |---|---|
-| `PixelizerApplier3D` | The entry point. Binds supported geometry in its subtree through a `PixelizerGeometryState` (no auto-created nodes) and watches `SceneTree.node_added` so runtime spawns are picked up. Resolves the manager explicitly (sibling `PixelizerManager3D` at top level, parent applier's manager when nested); a `-1`/sentinel property inherits from the parent applier, then the manager. |
-| `PixelizerManager3D` | One per viewport. Owns the metadata `SubViewport` + camera, attaches the compositor effects to the active `Camera3D` (auto-follow; `set_target_camera()` to pin), keeps the metadata camera in sync, resolves the sun and holds the object profiles. **Must be placed explicitly and named `PixelizerManager3D`** (the addon never creates one). |
+| `PixelizerApplier3D` | The entry point. Binds supported geometry in its subtree through a `PixelizerGeometryState` (no auto-created nodes) and watches `SceneTree.node_added` so runtime spawns are picked up. Resolves the manager explicitly (sibling `PixelizerManager3D` at top level, parent applier's manager when nested); a `-1`/sentinel property inherits from the parent applier, then the manager's settings defaults. |
+| `PixelizerManager3D` | One per **process**. Owns the metadata `SubViewport` + camera, attaches the compositor effects to the active `Camera3D` (auto-follow; `set_target_camera()` to pin), keeps the metadata camera in sync, resolves the sun, holds the object profiles and the `settings` look resource. **Must be placed explicitly and named `PixelizerManager3D`** (the addon never creates one). A second live manager warns: the pipeline globals are global shader uniforms. |
+| `PixelizerSettings` | The per-scene look `Resource` (`manager.settings`): resolution model, palette LUT/dither, camera snap, outline tuning and the `default_*` applier inherit values. Writes notify the manager, which re-publishes globals and re-derives every applier subtree. |
 | `PixelizerObjectProfile` | Per-object override `Resource` in the manager's `object_profiles` array, targeting a geometry node (`target_path` or `register_object_profile`). Sentinels inherit from the applier; `outline_id_mode` picks inherit / auto-allocate / explicit. |
-| `PixelizerDiagnosticsOverlay` | HUD status readout plus a runtime tuner: one foldable panel per manager export group and per scene-effect node, and a "Select Object" click-to-pick inspector for `PixelizerObjectProfile` / parent-applier parameters (`PixelizerApplier3D` is never pickable). Toggle key defaults to `Tab`. |
+| `PixelizerDiagnosticsOverlay` | HUD status readout plus a runtime tuner: one foldable panel per manager export group, the settings "Look" sections and one per scene-effect node, and a "Select Object" click-to-pick inspector for `PixelizerObjectProfile` / parent-applier parameters (`PixelizerApplier3D` is never pickable). Toggle key defaults to `Tab`. |
 | `PixelizerSkyClouds3D` | Cloud **provider** (owns the 15 cloud-field params + noise) and optional visible deck. `enabled` = node on/off, `deck_enabled` = visible sheet, `clouds_enabled` = shader master toggle. |
 | `PixelizerGodRays3D` | God-ray node: owns the ray tuning exports and its `PixelizerGodRayEffect`, inserted before the snapshot pass. `enabled = false` removes the pass. |
 | `PixelizerWater3D` | Opaque banded water tile (`water.gdshader`); registers its material for cloud-shadow uniforms. |

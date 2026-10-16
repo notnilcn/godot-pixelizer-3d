@@ -9,99 +9,141 @@ Godot binary: `C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe`
 (4.7.1 mono, use the `_console` variant).
 
 ```bash
-# 1. Import + parse check (REQUIRED after every .glsl edit — SPIR-V is baked at
-#    import; a stale cache silently runs the old shader or errors at load).
+# 1. Import + parse check (REQUIRED after every .glsl / .gdshader edit — SPIR-V
+#    is baked at import; a stale cache silently runs the old shader or errors at
+#    load). The pipeline globals are declared in project.godot, so this prints no
+#    SHADER ERROR on a clean tree — any error here is real.
 "C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --headless --editor --quit --path .
 
 # 2. Run the demo (real GPU, interactive).
 "C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --path .
 
 # 3. Shader-bridge fixtures (headless, no GPU): scan/generate, include
-#    flattening, determinism, manifest round-trip, registry gating, cloud-owner
-#    vs bundled-cloud injection, and "the scanned addon is never written".
-#    Exit 0 = all pass. Fixtures wipe/rebuild
-#    tests/bridge/generated/.
+#    flattening, determinism, manifest round-trip, registry gating, stale-entry
+#    reporting, cloud-owner vs bundled-cloud injection, and "the vendored addon
+#    tree is never written". Exit 0 = all pass. Fixtures wipe/rebuild
+#    tests/bridge/generated/ (untracked; the fixtures own it).
 "C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --headless --path . --script res://tests/bridge/bridge_fixtures.gd
 
-# 4. (Re)generate the MST bridge shaders. Run after ANY MST shader change:
-#    writes the test fixtures (tests/bridge/generated/) and the demo's
-#    production manifest + shaders (res://pixelizer_bridges/). A new
-#    INJECTION_RULES_VERSION makes old entries stale until this runs.
+# 4. (Re)generate the MST bridge shaders for the TESTS, and refresh the three
+#    MST entries of the production manifest. Additive and path-faithful: other
+#    manifest entries, approvals and exclusions survive, and output paths match
+#    the bridge dock's. Run after ANY MST shader change — and before step 5,
+#    which has nothing to load without it; a new INJECTION_RULES_VERSION makes
+#    old entries stale until this runs.
 "C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --headless --path . --script res://tests/bridge/generate_bridges.gd
 
-# 5. Windowed compile smoke test for the generated bridge shaders. Prints no
-#    SHADER ERROR on success.
+# 5. Windowed compile smoke test for the generated bridge shaders (needs step 4
+#    in the same checkout). Prints no SHADER ERROR on success.
 "C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --path . res://tests/bridge/compile_test.tscn
 ```
 
-The demo and the addon implement no custom CLI flags. `tests/` holds a
-capture-matrix runner (`run_captures.py`) with a PIL diff tool
-(`compare_captures.py`), reference PNGs (`reference/`), fresh captures
-(`captures/`) and per-run logs (`logs/`) — see `tests/README.md`. The demo
-does not parse the matrix flags and prints no diagnostics line, so matrix
-runs fail the diagnostics check (exit 1).
+The demo and the addon implement no custom CLI flags beyond the capture CLI
+(`demo/capture.gd`, driven by `tests/run_captures.py`; see "Captures" below).
+`tests/` holds the bridge
+fixtures (`tests/bridge/`), the dither/palette unit tools
+(`tests/dither_matrix_check.gd`, `tests/bake_palette_lut_debug.gd`), the capture
+matrix (`tests/run_captures.py` + `tests/reference/`) and a standalone PNG diff
+tool (`tests/compare_captures.py`); `tests/captures/` is the designated output
+directory for captures.
+
+## Captures
+
+`tests/run_captures.py` drives `demo/demo.tscn` through the small capture CLI in
+`demo/capture.gd` (`--capture=<path>`, `--resolution=WxH`, `--fixed-view=<name>`,
+`--mode=anchor|lowres`, `--plain`, `--debug-view=N`, `--pixel-size=N`,
+`--no-overlay`, `--overlay`, `--settle=<frames>`; flags go after a bare `--`).
+Each run prints one `PIXELIZER_CAPTURE {json}` diagnostics line, and the runner
+fails the entry if a requested flag is not reflected there. With `--fixed-fps 60`
+and the helper's pinned god-ray phase the demo is deterministic frame-by-frame,
+so the references in `tests/reference/` compare at zero tolerance on one machine.
+`--plain` turns the pipeline off from both ends (manager *and* appliers), so it
+is a real baseline rather than a half-disabled frame. `docs/images/*.png` are
+shot through the same CLI (`--fixed-view=wide|characters`, `--overlay` for the
+diagnostics shot).
 
 ## Demo (`demo/demo.tscn`, main scene)
 
 - `demo/demo.tscn` + `demo/player.gd`. `demo/demo.gd.uid` has no matching script.
 - Scene tree: an explicit `PixelizerManager3D` (auto-follows the viewport's
-  current camera; no camera export/path) exists because the demo authors shared
-  settings on it (`bridge_manifests`, `auto_bridge_custom_shaders`); appliers
-  would create one automatically otherwise. Top-level
-  `PixelizerApplier3D` contains: 6 character FBX instances under a
-  `Node3D/Node3D` row (`Barbarian`, `Knight`, `Mage`, `Ranger`, `Rogue`,
-  `Rogue_Hooded`), `PixelizerFireflies3D`, a playable `CharacterBody3D`
-  (Knight visual + arcball `Camera3D` child), a nested `PixelizerApplier3D`
-  around `MarchingSquaresTerrain` (`data_directory =
-  res://demo/demo2_TerrainData/...`) + `GrassPlanter` (MultiMeshInstance3D),
-  plus `PixelizerPointLightVolume3D`, `PixelizerSkyClouds3D`,
-  `PixelizerGodRays3D` and `PixelizerWater3D` (last three parented to the scene
-  root; they resolve the manager themselves, the explicit `manager` NodePath is
-  an optional override).
+  current camera; no camera export/path) — the demo places it because wiring is
+  explicit. Top-level `PixelizerApplier3D` contains: 6 character FBX instances
+  under one `Node3D` row (`Barbarian`, `Knight`, `Mage`, `Ranger`, `Rogue`,
+  `Rogue_Hooded`), a playable `CharacterBody3D` (Knight visual + arcball
+  `Camera3D` child), a nested `PixelizerApplier3D` around
+  `MarchingSquaresTerrain` (`data_directory =
+  res://demo/demo_TerrainData/MarchingSquaresTerrain_126b8b50`) + `GrassPlanter`
+  (MultiMeshInstance3D), and `PixelizerPointLightVolume3D`. The effect nodes
+  (`PixelizerSkyClouds3D`, `PixelizerGodRays3D`, `PixelizerWater3D`,
+  `PixelizerFireflies3D`) live under a `PixelizerEffects` node at the scene root,
+  outside every applier — an applier binds any supported geometry in its subtree,
+  so effects that are `MeshInstance3D`s must stay outside one (or be added to the
+  `pixelizer_ignore` group).
 - Assets: `demo/assets/characters/` (FBX + `*_texture.png`, KayKit Adventurers
-  pack per `CREDITS.md`); MST save data in `demo/demo2_TerrainData/`.
+  pack per `CREDITS.md`); MST save data in `demo/demo_TerrainData/`.
 - Bridge wiring: the manager trusts the production manifest
   (`bridge_manifests = [res://pixelizer_bridges/pixelizer_bridge_manifest.tres]`)
   with `auto_bridge_custom_shaders = true`, so the pristine MST shaders are
   swapped for generated bridge shaders at runtime. `res://pixelizer_bridges/`
-  is generated output — delete it and rerun `generate_bridges.gd` to rebuild.
-- Nested terrain applier: `pixel_size = 5`, `anchor_mode = 1` (UNIFIED),
-  `outline_enabled = 0`. UNIFIED is load-bearing: the 7 chunk meshes + grass
-  share one world-origin macro lattice, otherwise the outline pass samples
-  phase-shifted neighbour anchor cells across chunk borders and draws false
-  inner-edge outlines along them. `outline_enabled = 0` keeps the terrain tag
-  out of the outline pass entirely (every elevation step is a depth edge, so an
-  outlined terrain floods with outline blocks).
+  is generated output — rebuild it from the bridge dock, **not**
+  `generate_bridges.gd` (see step 4 above).
+- Nested terrain applier: inherits the settings default `pixel_size = 5`,
+  `anchor_mode = 1` (UNIFIED), `outline_enabled = 0`. UNIFIED is load-bearing:
+  the chunk meshes + grass share one world-origin macro lattice, otherwise the
+  outline pass samples phase-shifted neighbour anchor cells across chunk borders
+  and draws false inner-edge outlines along them. `outline_enabled = 0` keeps the
+  terrain tag out of the outline pass entirely (an outlined terrain marks every
+  convex elevation step, and the old first-difference depth test flooded every
+  slope).
 - The pristine MST shader uses `cull_disabled`; the pre-bridge fork used
   `cull_back` to hide underside geometry at shallow pitches. The bridge only
   rewrites stage functions, never `render_mode`, so re-adding that fix needs a
   bridge render_mode rule or an addon patch.
+- `PixelizerEffects` is **visible** (it is the demo's showcase of the optional
+  nodes: water, fireflies, cloud deck, god rays). The `PixelizerWater3D` tile
+  sits at `y = 0.15` on the flat ground around the world origin — a 4 m shallow
+  (`coast = 1.0`) patch beside the point-light volume, high enough that the
+  ±0.12 m vertex waves never dip under the terrain (a single tile,
+  `wave_phase = 0`; the node is built for a contiguous grid).
 - Controls (`demo/player.gd`): WASD camera-relative move, Space jump, arrow
-  keys orbit (yaw/pitch), mouse drag orbits, wheel zooms (distance 2–14 m,
-  pivot height 1.5 m). `Tab` toggles `PixelizerDiagnosticsOverlay` — the status
-  readout plus runtime tuner docks: one foldable panel per manager export group
-  and per scene-effect node (right), and a "Select Object" click-to-pick
-  inspector for `PixelizerObjectProfile` / parent-applier parameters (left).
+  keys orbit (yaw/pitch), mouse drag orbits, wheel zooms. The authored camera is
+  a near-vertical overhead rig: `orbit_distance = 24`, `pitch_deg = 89.9` with
+  `pitch_max_deg = 89.9`, `pivot_height = 0.6`, distance clamped 2–60.
+  `Tab` toggles `PixelizerDiagnosticsOverlay` — the status readout plus runtime
+  tuner docks: one foldable panel per manager export group, the "Look" sections
+  of the `settings` resource, and one panel set per scene-effect node (right),
+  and a "Select Object" click-to-pick inspector for
+  `PixelizerObjectProfile` / parent-applier parameters (left).
   `PixelizerApplier3D` is never pickable; `unselectable_parent_types` /
   `unselectable_parents` extend the block list, and children of blocked nodes
   stay selectable.
   InputMap actions (`player_forward`/`back`/`left`/
-  `right`/`jump`, `camera_orbit_*`) are created at runtime, idempotent —
-  `project.godot` has no `[input]` section.
-- `PixelizerCameraController3D` was removed; the player script owns the camera.
+  `right`/`jump`, `camera_orbit_*`) are created at runtime, idempotently;
+  `project.godot` also carries its own `[input]` section (w/a/s/d + the orbit
+  keys), which the runtime registration leaves alone.
+- Capture CLI (see "Captures" below): `--capture=<res://path>`,
+  `--resolution=WxH`, `--fixed-view=<name>`, `--plain`, `--debug-view=N`,
+  `--no-overlay`; a diagnostics JSON line goes to stdout so a silently ignored
+  flag fails a capture run.
 - `capture.png`, `capture_metadata.png`, `palette_lut_debug.png` at the repo
-  root are generated artifacts (gitignored via `*.png` / `*.import`).
+  root are generated artifacts and are **tracked**, not gitignored.
+  `palette_lut_debug.png` is rebaked by `tests/bake_palette_lut_debug.gd`; the
+  first two are historical outputs of the deleted showcase captures (the current
+  matrix writes to `tests/captures/`).
 
 ## Composition model (per-scene effects)
 
-`PixelizerApplier3D` is the entry point: it binds its subtree and creates the
-shared `PixelizerManager3D` for the viewport when the scene has none. The
-manager is a neutral pipeline hub: it owns only shared services (metadata
-viewport + camera, compositor, material factory, outline palette, palette LUT,
-resolution/zoom, camera snap, mover snap, focus, bridge registry, the shared
-`sun`) and generic registration slots. Every *visual* effect is an optional,
-self-contained scene node in `effects/` that owns its own settings and resolves
-the manager itself:
+`PixelizerApplier3D` is the entry point: it binds its subtree and resolves the
+shared `PixelizerManager3D` (it never creates one). The manager is a neutral
+pipeline hub: it owns only shared services (metadata
+viewport + camera, compositor, material factory, outline palette registry,
+camera snap, mover snap, focus, bridge registry, the shared
+`sun`) plus the per-scene look in a `PixelizerSettings` resource
+(`manager.settings`, auto-created when unset: resolution model, palette,
+outline tuning, snap toggles and the applier `default_*` inherit values — swapping
+it per camera is the supported way to give two cameras different looks). Every
+*visual* effect is an optional, self-contained scene node in `effects/` that owns
+its own settings and resolves the manager itself:
 
 | Scene wants | Nodes to place |
 |---|---|
@@ -126,7 +168,11 @@ new effect types need no manager change):
   is the provider node. With no provider the manager pushes neutral params
   (`clouds_enabled = false`) so consumers never read stale uniforms.
   `get_cloud_params()` exposes the dictionary to non-material consumers (the
-  god-ray pass pulls it).
+  god-ray pass pulls it). Several providers may register; one is active per frame:
+  a provider whose optional `cloud_camera_scope` matches the active camera wins,
+  else the first unscoped provider. The second registration warns once.
+  **Hard limit:** the field is per manager (material uniforms), so two cameras
+  visible at once still share one field.
 - `add_pre_pixelization_effect(effect)` / `remove_pre_pixelization_effect(effect)`
   — inserts a `CompositorEffect` before the snapshot/apply passes (so its output
   is replicated into macro pixels) and removes it. Additions made before the
@@ -140,11 +186,65 @@ new effect types need no manager change):
 
 All effect nodes resolve the manager through the shared static
 `PixelizerManager3D.resolve_manager_explicit(node)` (nearest ancestor applier's
-manager → manager ancestor → sibling named `PixelizerManager3D` → null). Every
-effect keeps an optional `manager` override. Because an applier may bind before
+manager → manager ancestor → sibling named `PixelizerManager3D` → null) via the
+shared host in `effects/pixelizer_effect_3d.gd`
+(`PixelizerEffect3D.resolve(self)` caches the result on the effect's `manager`
+override, `is_live()` applies the editor gate, `report_missing()` is the one-shot
+loud error and `warnings()` is the `_get_configuration_warnings()` content). The
+host is a static mixin rather than a base class because the effects split across
+`Node3D` and `MeshInstance3D` and scenes already reference those node types.
+Because an applier may bind before
 a sibling manager's `_ready` has run, consumers that may live inside an applier
 subtree still register deferred. The legacy `resolve_manager()` keeps the
 viewport-group fallback and is used only by `PixelizerDiagnosticsOverlay`.
+
+**One manager per process.** The pipeline-wide parameters (metadata bit, screen
+size, low-res flag, palette LUT/dither) are global shader uniforms; a second live
+`PixelizerManager3D` overwrites the first and warns once. Multi-viewport support
+requires moving those to per-material parameters first.
+
+## Diagnostics overlay (runtime tuner scope)
+
+`PixelizerDiagnosticsOverlay` is a `CanvasLayer` (`Tab` to toggle) with three
+parts: a status line from `PixelizerManager3D.get_debug_status_line()`, a
+manager/effect tuner dock (right), and a click-to-pick object inspector (left).
+The tuner reflects **every** script export of the manager, of the
+`PixelizerSettings` resource (`Look — <group>` sections) and of each
+`Pixelizer*` effect node it finds, grouped by `@export_group`, and writes
+through the normal property setters (a settings write reaches the manager
+through the resource's `changed` signal).
+
+**A tuner row is only useful if the property is read after setup.** Everything
+else is live through its property setter; `IGNORE_CLASS_PROPERTIES` in
+`nodes/pixelizer_diagnostics_overlay.gd` hides the rows that cannot do anything
+at runtime:
+
+| Class | Setup-only (hidden from the tuner) | Why |
+|---|---|---|
+| `PixelizerSettings` | `texel_density`, `view_zoom` | read only by the resolution model (`get_view_width()` / `apply_managed_size()`), reachable only when `manage_camera_size` is on or in LOW_RES mode; the anchor lattice itself is screen-space. `get_view_width()`, `get_base_view_width()` and `set_view_zoom()` have no callers at all. |
+| `PixelizerManager3D` | `auto_bridge_custom_shaders` | read during `bind()` / `refresh_bridge()` only; the toggle is a wiring decision, not a live dial. |
+| `PixelizerWater3D` | `size`, `subdivisions` | build the mesh in `_ready`. (`coast` / `wave_phase` have setters and push their instance uniforms live.) |
+| `PixelizerSkyClouds3D` | `plane_size` | builds the `PlaneMesh` in `_ready`. (`clouds_enabled` / `deck_enabled` recompute `visible` directly.) |
+| `PixelizerDayNight3D` | — | every arc and ramp has a setter that re-applies the rig, so edits land while the clock is stopped. |
+
+`get_debug_status_line()` reports `u/texel=n/a (perspective)` when the active
+camera is not orthographic: the macro lattice is screen-space and the snap is
+orthographic-only by construction.
+
+The applier and `PixelizerObjectProfile` deliberately share property
+names (`pixel_size`, `dither_enabled`, `outline_enabled`, `mover_snap`,
+`outline_color`) because the applier/profile values are *inherit defaults*; the
+settings resource owns the `default_*` fallbacks, so a label is unambiguous
+wherever it appears. The
+object panel labels every section’s scope: `This object — <name>`, `Object
+profile (this object only)`, `Parent applier — <name> (shared by N meshes)`.
+
+The object picker resolves the physics hit and the mesh ray test independently
+and keeps the nearer one (physics wins a tie, since it is exact and resolves
+bodies to their mesh); `Create Object Profile` is offered only for supported
+geometry. The mesh triangle test uses the rest-pose faces for skinned meshes
+(the AABB pre-pass is skeleton-aware, so posed characters are at least
+culled/picked with the posed box).
 
 ## Architecture (anchor mode — the default)
 
@@ -188,25 +288,35 @@ in Additional invariants and the addon `README.md`.
   resolution), manager facade with focused helpers (`core/pixelizer_camera_binding.gd`,
   `core/pixelizer_cloud_field.gd`, `core/pixelizer_outline_registry.gd`,
   `core/pixelizer_focus.gd`, `core/pixelizer_lowres_view.gd`),
+  `core/pixelizer_settings.gd` (the per-scene look resource),
   `core/pixelizer_object_profile.gd` (per-object override resource),
   `core/pixelizer_inherit.gd` (inherit sentinel), material factory, outline
   palette, LUT/dither core, the snapshot/apply
   compositor passes plus the god-ray pass owned by `effects/pixelizer_god_rays_3d.gd`,
-  and the water / sky-clouds / point-light-volume / firefly-swarm / day-night /
+  `effects/pixelizer_effect_3d.gd` (the shared effect host), and the
+  water / sky-clouds / point-light-volume / firefly-swarm / day-night /
   foliage / screen-projection shaders + `effects/` nodes. `editor_preview` on the
   manager runs the pipeline non-destructively in the editor viewport.
 - Shader bridge (`core/pixelizer_shader_bridge.gd`,
   `core/pixelizer_bridge_{entry,manifest,registry}.gd`,
   `editor/pixelizer_bridge_{plugin,dock}.gd`): editor-time generator + manifest +
   runtime lookup for third-party shaders (MST), including the bundled cloud
-  toolkit + shadow term for sources that do not own one. `generate_bridges.gd`
-  writes both the test fixtures (`tests/bridge/generated/`) and the demo's
-  production manifest (`res://pixelizer_bridges/`, trusted via
-  `PixelizerManager3D.bridge_manifests`). Added 2026-09-18.
+  toolkit + shadow term for sources that do not own one. The **dock** is the
+  authority for `res://pixelizer_bridges/` (trusted via
+  `PixelizerManager3D.bridge_manifests`); `tests/bridge/generate_bridges.gd` is
+  additive and path-faithful (see build step 4).
 - Demo: MST + character playground described above.
-- `tests/`: runner + diff tool + reference PNGs + capture/log output dirs (see
-  `tests/README.md`); `tests/bridge/` holds the headless bridge fixtures and the
-  windowed generated-shader compile smoke test.
+- `tests/`: `tests/bridge/` holds the headless bridge fixtures and the windowed
+  generated-shader compile smoke test, `tests/dither_matrix_check.gd` unit-checks
+  the ordered-dither thresholds, `tests/bake_palette_lut_debug.gd` rebakes the
+  repo-root LUT artifact, and `tests/compare_captures.py` is a standalone PNG diff
+  tool with `tests/captures/` as its output directory (see `tests/README.md`).
+- Interactivity: the picker, object panel and tuner-scope fixes landed with this
+  plan (A1-A4); the LOW_RES snap sign/texel and the outline colour space and depth
+  test are fixed (C1-C3, D1); look lives in `PixelizerSettings` (F1) behind a
+  shared effect host (F2), with provider scoping (F3) and one-manager and
+  geometry-effect guards (F4/F5). MST interactions remain deliberately out of
+  scope.
 
 ## Load-bearing invariants
 
@@ -227,7 +337,7 @@ in Additional invariants and the addon `README.md`.
   `draw_list_bind_vertex_buffer`. The pipeline's `vertex_format` must be the
   *same* vertex format ID bound at draw time or RD debug validation errors.
 - **Push constants** must be a multiple of 4 floats and match the GLSL std430
-  struct byte-for-byte (apply pass: 12 floats / 48 bytes).
+  struct byte-for-byte (apply pass: 16 floats / 64 bytes).
 - **`RenderSceneBuffersRD.create_texture`** with `Vector2i.ZERO` size and
   `layers = 0` gives internal size / view count; textures are resize-safe.
 - **Metadata viewport** needs `use_hdr_2d = true` (raw float payload),
@@ -241,10 +351,10 @@ in Additional invariants and the addon `README.md`.
   `cull_mask`, `compositor`, `h_offset`, `v_offset` and (when
   `manage_camera_size`) `size` for the single bound camera when the active camera
   changes or the manager exits — so switching `Camera3D.current` at runtime just
-  works. One
-  manager per viewport; simultaneous split-screen is unsupported (the effects
-  bail on `view_count > 1`). Camera snap resolves the active camera at call time
-  (mover snap is fully shader-side and needs no camera lookup).
+  works. **One manager per process** (the pipeline globals are global shader
+  uniforms; a second manager warns); simultaneous split-screen is unsupported
+  (the effects bail on `view_count > 1`). Camera snap resolves the active camera
+  at call time (mover snap is fully shader-side and needs no camera lookup).
 - `create_pipeline` for compute must run on the render thread
   (`RenderingServer.call_on_render_thread`); raster pipelines are built lazily
   in `_render_callback` from the derived framebuffer format
@@ -266,6 +376,14 @@ in Additional invariants and the addon `README.md`.
   anchor clip in materials for that mode. `PixelizerLowResView.update_camera_size`
   writes the mirror camera; the user camera's size and snap offsets are saved at
   bind and restored on unbind.
+  **Texel and remainder semantics** (`PixelizerCameraBinding.snap()`): the snap
+  period in LOW_RES comes from `PixelizerLowResView.get_texel_world_size()`
+  (mirror camera size / display viewport size — measuring the user camera in the
+  window is off by `window_height / render_resolution.y`). A camera shift of
+  `+residual` moves the rendered content by `-residual` in texel space, so the
+  consumer counter-shifts with `scroll_shift = Vector2(residual.x, -residual.y)`
+  (x in columns; y negated because screen rows increase downward while view-space
+  y increases upward). A bare `-residual` doubles the x error.
 - **Per-object instance uniforms** (`anchor_macros.gdshaderinc`):
   `anchor_size`, `anchor_tag`, `anchor_focus`, `edge_tint`,
   `use_grade_lut`, plus `anchor_mode` (0 = PER_OBJECT,
@@ -282,12 +400,14 @@ in Additional invariants and the addon `README.md`.
 - **Applier inheritance / overrides** (`PixelizerApplier3D`): `pixel_size`,
   `palette_enabled`, `dither_enabled`, `anchor_mode`, `outline_enabled`,
   `shadow_casting` and `mover_snap` use `-1` = inherit (nearest ancestor with a
-  set value, then the manager default). `INHERITED_SETTINGS` holds each
-  property's manager fallback and built-in default, so one resolver handles all
-  of them; `_resolve_effective()` caches the values for a scan and nested
-  appliers resolve through their parent. Setters call `_refresh_children()` →
-  `rescan()`, which re-scans the subtree and re-derives nested appliers, so
-  runtime property changes propagate down. `rescan_interval > 0` keeps
+  set value, then the manager's `settings` default). `INHERITED_SETTINGS` names
+  each property's `PixelizerSettings` fallback and built-in default, so one
+  resolver handles all of them; `_resolve_effective()` caches the values for a
+  scan and nested appliers resolve through their parent. Setters call
+  `_refresh_children()` → `rescan()`, which re-scans the subtree and re-derives
+  nested appliers, so runtime property changes propagate down; the applier also
+  subscribes to the manager's `settings_changed` so a look change re-derives
+  every subtree. `rescan_interval > 0` keeps
   `_process` alive for a periodic scan; otherwise the watcher disables
   processing when idle.
 - **Mover snap** (`PixelizerManager3D.register_mover` / `unregister_mover`, and
@@ -318,10 +438,12 @@ in Additional invariants and the addon `README.md`.
   `cloud_threshold`, `cloud_bands`, `cloud_tightness`, `cloud_octave_drop`,
   `cloud_gap_erosion`, `cloud_detail_strength`, `cloud_wind`,
   `cloud_shadow_strength`, `cloud_shadow_banding_enabled`,
-  `cloud_shadow_levels`, `cloud_shadow_softness`) are built by the registered
+  `cloud_shadow_levels`, `cloud_shadow_softness`) are built by the active
   cloud **provider** (`PixelizerSkyClouds3D.build_cloud_params()`) and pushed by
   the manager (`core/pixelizer_cloud_field.gd`) to every registered cloud /
-  pixelized material. With no provider
+  pixelized material. `cloud_octave_drop` is the second-octave persistence of the
+  optional detail FBM in `cloud_noise_at` (mirrored by the god-ray pass); with
+  `cloud_detail_strength = 0` it is inert. With no provider
   the manager pushes neutral params (`clouds_enabled = false`, key defaults).
   Third-party sources without a
   cloud toolkit get the bundled include plus an injected
@@ -338,7 +460,7 @@ in Additional invariants and the addon `README.md`.
 - **Material-factory eviction**: `PixelizerMaterialFactory` keeps a
   `WeakRef(source)` per cache id and drops the cached conversion when the source
   material is freed (MST chunk rebuilds / runtime swaps), bounding the cache.
-- The apply pass push-constant block is **12 floats** (48 bytes); the GLSL
+- The apply pass push-constant block is **16 floats** (64 bytes); the GLSL
   std430 struct must match byte-for-byte and any new field needs a matching pad.
   Outline colour rides the palette, not the push block.
 - **Geometry state / single slot iterator**: `PixelizerGeometryState` binds
@@ -402,8 +524,9 @@ in Additional invariants and the addon `README.md`.
     diagnostics are `get_bridge_mapped_count()` / `get_bridge_warnings()`.
   - **The source addon is never written.** The dock refuses an `output_dir` that
     lies inside any scanned root. `tests/bridge/bridge_fixtures.gd` hashes the
-    whole `addons/MarchingSquaresTerrain/resources/shaders` tree before/after
-    scan+generate and asserts it is byte-identical.
+    whole vendored `addons/MarchingSquaresTerrain` tree (excluding `.uid` /
+    `*.import` engine sidecars) before/after scan+generate and asserts it is
+    byte-identical.
   - **Injection vocabulary.** Generated shaders include
     `anchor_macros.gdshaderinc` and use the `PIXELIZER_*` aliases defined at the
     end of that header (`PIXELIZER_VERTEX(0)` first in `vertex()`;
@@ -433,29 +556,50 @@ in Additional invariants and the addon `README.md`.
     `add_dock(EditorDock)`), called dynamically so the deprecation analyzer stays
     quiet, and removes via `remove_control_from_docks`.
 - **Outline palette contract** (`core/pixelizer_outline_palette.gd` + the apply
-  pass): a 256x2 RGBA8 texture. Row 0 = silhouette colour, row 1 = inner
+  pass): a 256x2 RGBA8 texture. Row 0 = silhouette/exterior colour, row 1 = inner
   (id / depth-discontinuity) colour; the alpha channel is an **opacity**
   (`0` = leave the sampled scene colour, `1` = replace it). The apply shader
-  composites `mix(scene, outline_rgb, opacity)`.
+  composites `mix(scene, linear(outline_rgb), opacity)` — the palette is baked
+  from authored (sRGB) colours into an 8-bit texture sampled without an sRGB
+  view, so the shader linearises with the exact sRGB EOTF (`srgb_to_linear()`;
+  the same trap the LUT documents). Skipping that conversion renders a
+  near-black authored colour ~5× lighter.
   `PixelizerManager3D.set_outline_color()` writes **both** rows with the
   colour's alpha as the opacity (`alpha = 0` hides the outline, `1` replaces the
   scene colour), so a per-applier `override_outline_color` also colours
   elevated-rim depth edges; `set_outline_enabled(false)` writes opacity 0 and
-  re-enabling restores the `outline_palette` row (or `outline_color`, at its
-  alpha) — the apply shader needs no branch.
+  re-enabling restores the `outline_palette` row (or `default_outline_color`, at
+  its alpha) — the apply shader needs no branch.
   `PixelizerOutlinePalette` stores per-row `silhouette_alpha` / `inner_alpha`
-  (float 0..1), replacing the old multiply-flag representation.
+  (float 0..1) and a `multiply_colors` mode: the default replaces at `alpha`;
+  multiply modulates (`color *= linear(rgb) * 2`, rows authored around 0.5 are
+  invisible — the ProPixelizer `_EdgeHighlightColor` convention).
+  The depth test is a **second difference** (`2*centre - a - b` per axis,
+  convex side only), so a slope at any angle stays clean; a step beyond
+  `outline_interior_threshold` routes to the silhouette row. An optional crease
+  term (`outline_normal_threshold`, 0 = off) samples the engine's
+  normal-roughness scene texture at ±1 macro step for `1 - dot(n, n_neighbour)`;
+  that buffer only exists when SSAO/SSIL/SSR (or a material using
+  `hint_normal_roughness_texture`) needs it, and the pass warns once and skips the
+  term otherwise. The buffer holds **per-pixel** normals (normal maps and
+  animated surfaces included), so a low threshold inks normal-mapped water or
+  foliage; the demo leaves the term off. Row 255 is the focus subject's row
+  (`set_outline_color(255, c)`
+  colours focused geometry).
   `PixelizerApplier3D.outline_enabled` (inherit sentinel / 0 off /
   1 on) and `PixelizerObjectProfile.outline_enabled` expose this per subtree.
-  Outlines paint whole macro blocks, so a tag viewed at grazing angles (dense
-  depth steps) can flood with the outline colour; terrain-like subtrees should
-  set `outline_enabled = 0`.
-- **Palette LUT contract**: `PixelizerManager3D.global_palette_lut` (Texture2D)
-  must keep its exact name — external pipeline components probe the property
+  Outlines paint whole macro blocks: a tag viewed at grazing angles (dense depth
+  steps) can still read busy, and terrain-like subtrees conventionally set
+  `outline_enabled = 0`.
+- **Palette LUT contract**: `PixelizerSettings.global_palette_lut` (Texture2D,
+  forwarded byte-for-byte by a non-exported `PixelizerManager3D.global_palette_lut`
+  property) must keep its exact name
+  — external pipeline components probe the property
   list and push their LUT there. The LUT is 256x256,
   `x = r + 16*b`, `y = g + 16*ditherBand` (16^3 gamma-space colours x 16
   ordered-dither bands), baked by `PaletteLUT` (core/) with
-  `DitherMatrix` (core/). The shader sampler is the
+  `DitherMatrix` (core/; thresholds `(n + 1) / 17`, matching the shader's alpha
+  dither cell for cell). The shader sampler is the
   `PixelizerGlobals.PALETTE_LUT` global uniform
   (`global uniform sampler2D pixelizer_palette_lut : source_color,
   filter_nearest, repeat_disable`) — `source_color` is mandatory (ALBEDO is
@@ -578,14 +722,22 @@ in Additional invariants and the addon `README.md`.
   position. Wind is world-space, amplitude = `wind_strength` × card world
   height × bend², clock quantised by `wind_fps` (stepped pixel animation).
   Atlas variation hashes world origin + `INSTANCE_ID`; alpha-scissor only via
-  `ANCHOR_CLIP`.
+  `ANCHOR_CLIP_AT(alpha, 0.5)` — cutout textures need a shader-authored minimum
+  threshold because the material's `alpha_scissor` uniform defaults to 0 (a bare
+  `ANCHOR_CLIP` would render the quad opaque). Grass derives the billboard
+  basis with a cross product against world up, with a fallback for a
+  straight-down camera (the old ground projection of the camera's forward axis
+  was `normalize(0, 0, 0)` = NaN at the pitch singularity). Neither shader is
+  referenced by any script, scene or resource: they are unexercised examples.
 - **Screen projection contract** (`shaders/screen_projection.gdshader`): the
   material is registered for clouds; the render resolution (not the window) rides
   the `PixelizerGlobals.SCREEN_SIZE` global uniform
   (`global uniform vec2 pixelizer_screen_size`), set in the manager's
   `_enter_tree` and on every `render_resolution` change via
-  `PixelizerGlobals.set_param()`. `PixelizerGlobals.ensure()` registers the
-  globals exactly once (guarded by a static dict plus
+  `PixelizerGlobals.set_param()`. The six pipeline globals are declared in
+  `project.godot` under `[shader_globals]` so shaders compile before a manager
+  registers them; `PixelizerGlobals.ensure()` registers them exactly once only
+  when the project has no such setting (guarded by a static dict plus
   `ProjectSettings.has_setting("shader_globals/<name>")`); never call
   `global_shader_parameter_get` at runtime. Projection UV =
   `(SCREEN_UV * pixelizer_screen_size - origin_px) / texture_size`, so texels
