@@ -288,3 +288,114 @@ _pick_physics would resolve to Chunk (0, -1)2 at 20.776
 
 That is A1's failure mode and its fix in one table: the physics ray still resolves
 to the terrain chunk, and the picker now takes the nearer character mesh.
+
+---
+
+## In-game verification pass (2026-10-16, third session)
+
+Everything below was run against the demo with a real Forward+ renderer (the
+headless build has no RenderingDevice, so the manager disables its compositor
+passes and pixelization cannot be observed at all).
+
+### Verified in-game
+
+| Item | Method | Result |
+|---|---|---|
+| **C3** LOW_RES smooth scroll | 20 camera samples across both source axes and diagonals; measured with the engine's own projection: `mirror.unproject_position(P)` with the snap offsets applied, again with them zeroed, and `manager.get_subtexel_remainder()`; asserted `snapped + shift == continuous` per axis | **65 checks pass**, error 0.0000 texels. Non-vacuity: max residual 0.50 texels, and the pre-fix `-residual` x formula fails the same assertion by >0.2 |
+| **D1a** outline second difference | A flat plane must produce zero depth ink (a first difference cannot). Scoped the two flat chunks, hid grass/raised chunks, and differenced the view with the outline toggled off/on | **8 checks pass**: flat rect **0 px** inked, a convex control box under the same toggle **1160 px**, whole-frame noise floor **0 px** |
+| **B1** bridge watchdog | Read every chunk's render-effective shader after MST's baker had swapped the meshes | All four on `pixelizer_bridges/…/mst_terrain_baked.gdshader`, watch set 8. **Nuance:** a frame-by-frame trace shows the first `bind()` never succeeded, so the *pre-existing failed-bind path* armed the watchdog — the repaired "successful bind that swapped" branch is exercised only by reasoning, not by this scene |
+| **A3** live tuner rows | Set each property and read the observable state; audited that the checks are not self-fulfilling (the probe never writes `visible`; `follow_camera = false` provably blocks `_process` from writing it) | water `coast`/`wave_phase` reach the instance uniforms; sky `deck_enabled`/`clouds_enabled` update `visible`; day/night re-applies the arc (observed `-7.05°` == `-sin(0.1·TAU)·12`). Caveat: script→state plumbing, not GPU pixels; the day/night "before" reading is the authored rotation, so the cap assertion is weaker than it looks |
+| **F3** camera-scoped cloud providers | Registered two duck-typed providers with different thresholds, each scoped to one camera, and switched `current` | Threshold follows the camera (0.2 / 0.8). Re-registering in **reverse order** still gives 0.2 for camera A, ruling out registration-order as the cause |
+| **B3** pre-swap check | Two-surface node: one approved-bridge slot, one unregistered custom slot | Neither slot swapped, no surface overrides, metadata layer untouched — 13 checks pass (with D4/F4/F5) |
+| **D4** runtime clamps | `pixel_size = 8`, `outline_id = 300` | Clamped to `anchor_size = 5`, `anchor_tag = 254` with one-shot warnings |
+| **F4/F5** guards | Group membership; added a second manager | water + sky clouds in `pixelizer_ignore` (the light volume deliberately not); the multi-manager warning fires naming the shared globals |
+| **A1/A2/A4/C1/C4/G1** | Capture inspection | Picker selects the nearest mesh; scoped panel labels; `u/texel=n/a (perspective)`; near-black outlines; `Look — …` groups; water rendering |
+| Battery | import / fixtures / dither / mover / matrix | clean / 78 / 35 / 8 / 5 of 5 |
+
+### A claim of mine that verification falsified (F1)
+
+The F1 checks failed, and the audit showed **the assertion was wrong, not the
+feature**: `demo.tscn` pins `pixel_size = 5` on the top-level applier and
+`_resolve_setting()` is nearest-author-wins, so a `default_pixel_size` change
+*cannot* reach `Knight_Body`. A counter-test on an inheriting subtree shows both
+the live write and the whole-resource swap landing one frame later with
+`rescan_interval = 0`. Propagation works; the probe targeted a mesh that can
+never respond. Practical consequence worth knowing: in the demo, the tuner's
+Look → Pixelization → default pixel size moves the terrain (which inherits) and
+not the characters (which are pinned).
+
+### Defects found
+
+1. **`PixelizerCloudField.register_provider` aborted on duck-typed providers.**
+   `String()` has no Object overload, so registering a plain `RefCounted`
+   provider — the API the class documents — raised `Invalid call 'String'
+   constructor` and aborted the function *before* `_dirty = true` /
+   `_push_all()`. **Fixed**: it now names the script class when there is one
+   (`<RefCounted#id>` for an inner/anonymous class), with a regression check.
+
+2. **The D3 revert gate does not fire for a full-block non-pixelized occluder.**
+   `base_raw` and `anchor_raw` are *both* depth-copy samples (`:121-122`), so
+   when an occluder covers the anchor's own screen position both samples are the
+   occluder's, `revert` stays false (`:174-177`), and the outline pass inks the
+   occluder with the pixelized object's edges (`:194`). Confirmed empirically:
+   in the bands fully covered by the test quad, non-magenta pixel count == ink
+   pixel count, and a frame dump shows the character's outline drawn on the
+   quad. **Not fixed.** A first attempt — gating on the anchor's *metadata*
+   depth instead — suppressed legitimate silhouette ink (the anchor often sits
+   on the far side of a block that straddles a silhouette, which is
+   indistinguishable from an occluder by depth alone); the capture matrix caught
+   it (`anchor` 0.41 % changed, mean 0.45 over tolerance) and it was reverted.
+   This needs a signal that separates "same object, different depth" from
+   "foreign surface" — e.g. sampling the metadata at the fragment's own
+   position, which is empty for non-survivor fragments and so needs a different
+   formulation than the current block-wide test.
+
+3. **The multiply mode's documented neutral is wrong.** The apply pass does
+   `color *= srgb_to_linear(row) * 2`, so the invisible row is
+   `linear_to_srgb(0.5)` **≈ 0.7354**, not 0.5 (a row at 0.5 multiplies by
+   ~0.43). The palette's own doc comment asserted both `* 2` with 0.5 invisible
+   *and* that the row is sRGB-decoded, which cannot both hold. **Docs corrected**
+   in `pixelizer_outline_palette.gd`, `pixelizer_manager_3d.gd` and `AGENTS.md`;
+   the semantics were left alone because the fix is a design choice (dropping
+   the decode in multiply mode makes 0.5 neutral again, matching ProPixelizer).
+
+### Unresolved, and not covered at all
+
+- **D1b crease term**: observed to change the render with SSAO on in one run
+  (threshold 0 vs 0.6, noise floor 0 px) and to change nothing in another. The
+  mechanism is code-verified and the addon's own warning confirms the buffer is
+  absent without SSAO, but the in-game effect was not reproducible across runs.
+  Treat as unverified.
+- **D2 multiply behaviour**: the branch does modulate (a 0.25-row palette
+  darkened the frame in one run), but the "0.5 is a no-op" formulation is false
+  by derivation, so no pass/fail is meaningful for it. Separately, assigning
+  *any* outline palette shifted the frame by ~0.5 % even when the palette should
+  be neutral; the audit's candidate cause is
+  `PixelizerOutlineRegistry.invalidate()` dropping the working copy, which also
+  drops per-tag `set_enabled(false)` writes (the terrain's disabled tag) until
+  the next rescan. Not chased.
+- **Palette LUT grading**: the demo assigns no `global_palette_lut`, so the
+  whole LUT path (bake → global uniform → grade) is unexercised; C2's fix is
+  covered numerically instead (unit check plus shader/matrix agreement).
+- **`editor_preview`**, the **bridge dock UI**, and the **foliage shaders**
+  (`tree_leaves` / `grass_billboard` are referenced by nothing, so
+  `ANCHOR_CLIP_AT` is unexercised).
+- **Simultaneous multi-camera** remains unsupported by design (F5 warns).
+
+### Method notes (each of these produced a plausible-looking wrong number)
+
+1. `root.get_texture().get_image()` returns the **last rendered frame**: two
+   grabs in one `_process` call are the same image, and mutating state then
+   grabbing captures the *pre*-mutation frame. Every compared pair must be
+   captured in its own frame.
+2. **This demo animates far more than it appears**: cloud wind, the god-ray
+   pass's wall clock, grass billboard sway, water waves and fireflies. Two
+   "identical" frames differed by ~24 % of the image before the effects container
+   and grass planters were hidden and the cloud wind and ray phase frozen. Assert
+   a **0 px noise floor** before trusting any diff.
+3. **A colour predicate cannot detect ink on this scene**: the authored outline
+   is near-black and so is much of the shaded terrain at close range. Ink is
+   only measurable as the difference the outline toggle makes.
+4. **Design the control first.** Two of the probes above "passed" their headline
+   assertion while measuring nothing (a rect the occluder did not cover; a
+   control that could not respond to the toggle). Only the controls caught it.

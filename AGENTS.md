@@ -572,8 +572,17 @@ in Additional invariants and the addon `README.md`.
   its alpha) — the apply shader needs no branch.
   `PixelizerOutlinePalette` stores per-row `silhouette_alpha` / `inner_alpha`
   (float 0..1) and a `multiply_colors` mode: the default replaces at `alpha`;
-  multiply modulates (`color *= linear(rgb) * 2`, rows authored around 0.5 are
-  invisible — the ProPixelizer `_EdgeHighlightColor` convention).
+  multiply modulates (`color *= srgb_to_linear(rgb) * 2`; because the row colour
+  is sRGB-decoded in both modes, the invisible row is **~0.7354**, not 0.5 — the
+  ProPixelizer `_EdgeHighlightColor` convention assumes a plain multiply).
+  **Known limitation:** the `!revert` gate that suppresses ink on a non-visible
+  surface does *not* cover a non-pixelized occluder that spans a whole macro
+  block. `revert` compares two depth-copy samples (`base_raw` at `uv`,
+  `anchor_raw` at `snapped_uv`), and when the occluder also covers the anchor's
+  screen position both samples are the occluder's, so it stays false and the
+  occluder is inked with the pixelized object's edges. Measured and unfixed —
+  see "Defects found" in `SUMMARY.md` for the evidence and why a depth-only
+  replacement gate is not sufficient.
   The depth test is a **second difference** (`2*centre - a - b` per axis,
   convex side only), so a slope at any angle stays clean; a step beyond
   `outline_interior_threshold` routes to the silhouette row. An optional crease

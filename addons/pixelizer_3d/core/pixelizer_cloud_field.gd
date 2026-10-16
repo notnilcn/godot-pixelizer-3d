@@ -46,7 +46,16 @@ func register_provider(provider: Object) -> void:
 				var node := entry as Node
 				names.append(str(node.get_path()) if node.is_inside_tree() else String(node.name))
 			else:
-				names.append(String(entry))
+				# `String()` has no Object overload: calling it here raised
+				# "Invalid call 'String' constructor" and aborted this function
+				# before `_dirty`/`_push_all()`, i.e. for exactly the duck-typed
+				# provider the API documents ("any Object with
+				# build_cloud_params"). Name the script class when there is one.
+				var script: Script = (entry as Object).get_script()
+				var label := str(entry)
+				if script != null and not String(script.get_global_name()).is_empty():
+					label = String(script.get_global_name())
+				names.append(label)
 		push_warning("Pixelizer3D: %d cloud providers are registered (%s). One field drives every cloud consumer; a provider with `cloud_camera_scope` set is active only for that camera, unscoped providers act as fallbacks in registration order. Two cameras visible at once still share one field." % [_providers.size(), ", ".join(names)])
 	_dirty = true
 	_push_all()

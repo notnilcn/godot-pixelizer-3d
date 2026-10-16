@@ -12,10 +12,13 @@ extends Resource
 ## multiply flag.
 ##
 ## `multiply_colors` switches the apply pass to a modulation instead:
-## `scene_color *= palette.rgb * 2`, so rows authored around `(0.5, 0.5, 0.5)`
-## are invisible, darker rows darken and brighter rows brighten (the
-## ProPixelizer `_EdgeHighlightColor` convention). The apply pass linearises
-## the authored (sRGB) row colour in both modes.
+## `scene_color *= palette.rgb * 2`, so darker rows darken and brighter rows
+## brighten (the ProPixelizer `_EdgeHighlightColor` convention). The apply pass
+## linearises the authored (sRGB) row colour in **both** modes, so the actual
+## multiplier is `srgb_to_linear(row) * 2` and the row that is invisible is
+## **~0.7354** (`linear_to_srgb(0.5)`), not 0.5 — a row authored at 0.5
+## multiplies by ~0.43, i.e. it darkens by ~57%. (ProPixelizer's 0.5 comes from
+## a plain multiply with no colour-space decode.)
 ##
 ## Row 255 is the focus subject's row: `PixelizerManager3D.set_outline_color(255,
 ## c)` colours focused geometry (whose metadata tag is forced to 255).

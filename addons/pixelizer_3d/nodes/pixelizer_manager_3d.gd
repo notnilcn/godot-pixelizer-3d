@@ -716,7 +716,8 @@ func get_outline_texture() -> ImageTexture:
 
 
 ## True when the working outline palette composites as a modulation
-## (`color *= palette_rgb * 2`, 0.5 = invisible) instead of replacing the scene
+## (`color *= srgb_to_linear(palette_rgb) * 2`, so the invisible row is ~0.735,
+## not 0.5) instead of replacing the scene
 ## colour at the row's alpha. Set on the authored palette.
 func get_outline_multiply_mode() -> bool:
 	return _outlines.is_multiply()
