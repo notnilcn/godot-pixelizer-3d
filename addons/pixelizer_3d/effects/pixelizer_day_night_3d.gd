@@ -44,36 +44,36 @@ extends Node3D
 @export var world_environment: WorldEnvironment
 
 @export_group("Sun arc")
-@export_range(0.0, 90.0) var max_elevation_deg := 78.0
+@export_range(0.0, 90.0) var max_elevation_deg := 78.0: set = _set_max_elevation_deg
 ## Total yaw swept over one day (the azimuth curve is normalized to this).
-@export var azimuth_sweep_deg := 360.0
-@export var azimuth_offset_deg := 0.0
+@export var azimuth_sweep_deg := 360.0: set = _set_azimuth_sweep_deg
+@export var azimuth_offset_deg := 0.0: set = _set_azimuth_offset_deg
 ## Normalized elevation in [-1, 1]; null = sine arc.
-@export var elevation_curve: Curve
+@export var elevation_curve: Curve: set = _set_elevation_curve
 ## Normalized azimuth in [0, 1] scaled by `azimuth_sweep_deg`; null = linear.
-@export var azimuth_curve: Curve
+@export var azimuth_curve: Curve: set = _set_azimuth_curve
 
 @export_group("Sun ramps")
-@export var sun_color_ramp: Gradient
-@export var sun_energy_ramp: Curve
+@export var sun_color_ramp: Gradient: set = _set_sun_color_ramp
+@export var sun_energy_ramp: Curve: set = _set_sun_energy_ramp
 
 @export_group("Ambient ramps")
-@export var ambient_color_ramp: Gradient
-@export var ambient_energy_ramp: Curve
+@export var ambient_color_ramp: Gradient: set = _set_ambient_color_ramp
+@export var ambient_energy_ramp: Curve: set = _set_ambient_energy_ramp
 
 @export_group("Sky ramps")
-@export var sky_top_ramp: Gradient
-@export var sky_horizon_ramp: Gradient
-@export var sky_ground_ramp: Gradient
-@export var background_energy_ramp: Curve
+@export var sky_top_ramp: Gradient: set = _set_sky_top_ramp
+@export var sky_horizon_ramp: Gradient: set = _set_sky_horizon_ramp
+@export var sky_ground_ramp: Gradient: set = _set_sky_ground_ramp
+@export var background_energy_ramp: Curve: set = _set_background_energy_ramp
 
 @export_group("Fog ramps")
 ## Apply the fog ramps when the WorldEnvironment has fog enabled.
-@export var apply_fog := true
-@export var fog_color_ramp: Gradient
-@export var fog_density_ramp: Curve
+@export var apply_fog := true: set = _set_apply_fog
+@export var fog_color_ramp: Gradient: set = _set_fog_color_ramp
+@export var fog_density_ramp: Curve: set = _set_fog_density_ramp
 ## Multiplier for the normalized density curve.
-@export var fog_density_scale := 0.004
+@export var fog_density_scale := 0.004: set = _set_fog_density_scale
 
 
 func _ready() -> void:
@@ -151,6 +151,102 @@ func _azimuth_deg(t: float) -> float:
 	return t * azimuth_sweep_deg + azimuth_offset_deg
 
 
+# ── Live re-apply (tuner) ────────────────────────────────────────────────────
+#
+# The arc/ramp values are read only inside `_apply()`, which runs from `_ready`
+# and the `time_of_day` setter. Without these setters an edit while the clock is
+# stopped would do nothing until the next `_apply()`. Guarded through `_apply()`
+# itself (inside tree, not the editor).
+
+func _reapply() -> void:
+	_apply()
+
+
+func _set_max_elevation_deg(value: float) -> void:
+	max_elevation_deg = value
+	_reapply()
+
+
+func _set_azimuth_sweep_deg(value: float) -> void:
+	azimuth_sweep_deg = value
+	_reapply()
+
+
+func _set_azimuth_offset_deg(value: float) -> void:
+	azimuth_offset_deg = value
+	_reapply()
+
+
+func _set_elevation_curve(value: Curve) -> void:
+	elevation_curve = value
+	_reapply()
+
+
+func _set_azimuth_curve(value: Curve) -> void:
+	azimuth_curve = value
+	_reapply()
+
+
+func _set_sun_color_ramp(value: Gradient) -> void:
+	sun_color_ramp = value
+	_reapply()
+
+
+func _set_sun_energy_ramp(value: Curve) -> void:
+	sun_energy_ramp = value
+	_reapply()
+
+
+func _set_ambient_color_ramp(value: Gradient) -> void:
+	ambient_color_ramp = value
+	_reapply()
+
+
+func _set_ambient_energy_ramp(value: Curve) -> void:
+	ambient_energy_ramp = value
+	_reapply()
+
+
+func _set_sky_top_ramp(value: Gradient) -> void:
+	sky_top_ramp = value
+	_reapply()
+
+
+func _set_sky_horizon_ramp(value: Gradient) -> void:
+	sky_horizon_ramp = value
+	_reapply()
+
+
+func _set_sky_ground_ramp(value: Gradient) -> void:
+	sky_ground_ramp = value
+	_reapply()
+
+
+func _set_background_energy_ramp(value: Curve) -> void:
+	background_energy_ramp = value
+	_reapply()
+
+
+func _set_apply_fog(value: bool) -> void:
+	apply_fog = value
+	_reapply()
+
+
+func _set_fog_color_ramp(value: Gradient) -> void:
+	fog_color_ramp = value
+	_reapply()
+
+
+func _set_fog_density_ramp(value: Curve) -> void:
+	fog_density_ramp = value
+	_reapply()
+
+
+func _set_fog_density_scale(value: float) -> void:
+	fog_density_scale = value
+	_reapply()
+
+
 func _apply_environment(env: Environment, t: float) -> void:
 	if env == null:
 		return
@@ -171,10 +267,9 @@ func _apply_environment(env: Environment, t: float) -> void:
 
 
 func _resolve_refs() -> void:
-	if manager == null or not is_instance_valid(manager):
-		manager = PixelizerManager3D.resolve_manager_explicit(self)
+	manager = PixelizerEffect3D.resolve(self)
 	if manager == null and not Engine.is_editor_hint():
-		push_error("Pixelizer3D: PixelizerDayNight3D at '%s' found no PixelizerManager3D; the rig is inert." % get_path())
+		PixelizerEffect3D.report_missing(self, "the rig is inert.")
 	if sun == null or not is_instance_valid(sun):
 		if manager != null and manager.sun != null:
 			sun = manager.sun
@@ -203,15 +298,12 @@ func _sibling_world_environment() -> WorldEnvironment:
 
 
 func _get_configuration_warnings() -> PackedStringArray:
-	var warnings := PackedStringArray()
-	var resolved := manager
-	if resolved == null or not is_instance_valid(resolved):
-		resolved = PixelizerManager3D.resolve_manager_explicit(self)
-	if resolved == null:
-		warnings.append("No PixelizerManager3D resolved; the day/night rig cannot drive cloud/ray settings.")
+	var warnings := PixelizerEffect3D.warnings(self, "the day/night rig cannot drive cloud/ray settings.")
 	var resolved_sun := sun
-	if (resolved_sun == null or not is_instance_valid(resolved_sun)) and resolved != null:
-		resolved_sun = resolved.sun
+	if (resolved_sun == null or not is_instance_valid(resolved_sun)):
+		var resolved := PixelizerEffect3D.resolve(self)
+		if resolved != null:
+			resolved_sun = resolved.sun
 	if resolved_sun == null or not is_instance_valid(resolved_sun):
 		warnings.append("No sun: assign `sun`, set manager.sun, or add a sibling DirectionalLight3D.")
 	if world_environment == null and _sibling_world_environment() == null:

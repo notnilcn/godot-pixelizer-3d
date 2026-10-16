@@ -81,9 +81,18 @@ void vertex() {
 		length(MODEL_MATRIX[1].xyz),
 		length(MODEL_MATRIX[2].xyz));
 
-	// Upright billboard: camera right/back projected to the ground plane.
-	vec3 right = normalize(vec3(INV_VIEW_MATRIX[0].x, 0.0, INV_VIEW_MATRIX[0].z));
-	vec3 back = normalize(vec3(INV_VIEW_MATRIX[2].x, 0.0, INV_VIEW_MATRIX[2].z));
+	// Upright billboard: camera right projected to the ground plane, then
+	// `back` derived from it with a cross product against world up. Projecting
+	// the camera's own z axis (as an earlier version did) yields (0, 0, 0) when
+	// the camera looks straight down or up, and normalize() then produces NaN
+	// positions for every card.
+	vec3 right = vec3(INV_VIEW_MATRIX[0].x, 0.0, INV_VIEW_MATRIX[0].z);
+	if (length(right) < 1.0e-4) {
+		right = vec3(1.0, 0.0, 0.0);
+	} else {
+		right = normalize(right);
+	}
+	vec3 back = normalize(cross(right, vec3(0.0, 1.0, 0.0)));
 
 	// Unit card centred on the origin; lift it so the pivot becomes the base.
 	float bend = clamp(VERTEX.y + 0.5, 0.0, 1.0);
@@ -129,7 +138,10 @@ void fragment() {
 	// card centre (view space) so the swaying billboard shades as one unit.
 	LIGHT_VERTEX = f_card_center_view;
 	vec4 tex = texture(albedo_texture, f_uv);
-	ANCHOR_CLIP(tex.a * tint.a);
+	// Cutout card: 0.5 is this shader's minimum scissor (the material's
+	// `alpha_scissor` can raise it). Foliage atlases are alpha masks, so the
+	// uniform's 0.0 default would render the quad opaque.
+	ANCHOR_CLIP_AT(tex.a * tint.a, 0.5);
 	if (ANCHOR_META_ACTIVE(0)) {
 		ANCHOR_META_LIGHT(0);
 	} else {

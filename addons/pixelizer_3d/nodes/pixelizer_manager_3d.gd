@@ -30,7 +30,23 @@ enum DebugView {
 }
 
 @export_group("General")
-@export var enabled := true
+## Master toggle. Disabling detaches the pipeline: the manager stops syncing and
+## the bound camera's compositor / cull-mask changes are restored (the applier
+## materials stay converted — set the appliers' `enabled = false` for a plain
+## baseline; `demo/capture.gd --plain` does both).
+@export var enabled := true:
+	set(value):
+		if enabled == value:
+			return
+		enabled = value
+		if not is_inside_tree() or _camera == null:
+			return
+		if enabled:
+			# Re-resolve and re-attach on the next update; unbind saved the
+			# authored camera state.
+			_camera.update()
+		else:
+			_camera.unbind(_camera.bound_camera)
 @export var mode: Mode = Mode.ANCHOR:
 	set(value):
 		if mode == value:
@@ -56,88 +72,39 @@ enum DebugView {
 @export var object_profiles: Array[PixelizerObjectProfile] = []
 ## Directional light used by cloud shadows / god rays. Left unset, the manager
 ## binds the first sibling `DirectionalLight3D`; several siblings is ambiguous
-## and is reported.
+## and is reported. (Stays on the manager: a scene-node reference cannot be
+## serialized inside a Resource.)
 @export var sun: DirectionalLight3D:
 	set(value):
 		sun = value
 		_sun_resolved = true
-@export_group("Resolution")
-## Fixed render resolution (low-res mode) and scale reference. Also
-## published as the `PixelizerGlobals.SCREEN_SIZE` global shader uniform (vec2)
-## used by screen-space projection materials, so they lock to the render pixel
-## grid instead of the window resolution.
-@export var render_resolution := Vector2i(960, 540):
-	set(value):
-		render_resolution = value
-		PixelizerGlobals.set_param(PixelizerGlobals.SCREEN_SIZE, Vector2(render_resolution))
-## World texels per world unit (0.5 -> ortho width 1920).
-@export var texel_density := 0.5
-## Renderer-owned zoom on top of the configured scale.
-@export var view_zoom := 1.0
-## When true the manager drives `camera.size` from the resolution model (and
-## zoom). Leave false when the project owns the camera size itself.
-@export var manage_camera_size := false
 
-@export_group("Pixelization")
-## Default macro-pixel size for appliers/objects that inherit.
-@export_range(1, 5) var pixel_size := 3
-## Keep pixels in front of their anchor (non-pixelized geometry in front of a
-## pixelized object is not smeared by the block).
-@export var depth_occlusion := true
-## Default for appliers that inherit (`mover_snap == -1`): snap registered
-## movers onto the pixel lattice in the vertex stage via the `anchor_mover_snap`
-## instance uniform. The scene transform is never read or written. Explicit
-## `PixelizerApplier3D.mover_snap` wins. Orthographic cameras only.
-@export var mover_snap := false
-
-@export_group("Palette")
-## 256x256 palette LUT baked by PaletteLUT (16^3 colours x 16 dither bands).
-## Null disables grading. The property name is the main-client contract:
-## PixelArtPipelineComponent probes the property list and pushes its LUT here —
-## do not rename it.
-@export var global_palette_lut: Texture2D:
+@export_group("Look")
+## Per-scene look: the resolution model, palette, outline tuning, camera snap and
+## the applier inherit defaults (see `PixelizerSettings`). Auto-created when
+## unset, so existing scenes keep working; assign a saved resource to make the
+## look diffable and swappable (one settings resource per camera is the point).
+@export var settings: PixelizerSettings:
 	set(value):
-		global_palette_lut = value
-		_palette_dirty = true
-## Use the LUT's 16 ordered-dither bands (Bayer in macro-pixel space). When
-## false every fragment reads band 0, i.e. the nearest palette colour.
-@export var dither_enabled := true:
-	set(value):
-		dither_enabled = value
-		_palette_dirty = true
-
-@export_group("Camera")
-## Snap the camera to the texel lattice via h_offset/v_offset (never transforms).
-@export var snap_camera := true
-## Phase origin for the snap; world origin is used when unset.
+		if settings == value:
+			return
+		settings = value
+		if is_inside_tree():
+			_bind_settings()
+## Phase origin for the camera snap; world origin is used when unset. (Node
+## reference: stays on the manager.)
 @export var snap_origin: Node3D
-## Disable snapping (diagnostics / regression captures).
-@export var lock_camera := false
-
-@export_group("Outlines")
-@export var outline_enabled := true
-@export var outline_color := Color(0.04, 0.05, 0.09, 1.0):
-	set(value):
-		outline_color = value
-		if _outlines != null:
-			_outlines.invalidate()
-## Relative depth discontinuity that counts as an inner edge.
-@export_range(0.0, 1.0, 0.001) var outline_threshold := 0.02
-## Optional 256-tag palette (silhouette/inner rows). Per-applier colours are
-## registered into a working copy of this palette at runtime.
-@export var outline_palette: PixelizerOutlinePalette:
-	set(value):
-		outline_palette = value
-		if _outlines != null:
-			_outlines.invalidate()
-
-@export_group("Focus")
-## Automatically focus every pixelized mesh under `auto_focus_target`. Focus maps
-## an instance uniform onto edge tag 255 (reserved) without overwriting
-## `anchor_tag`; focused pixels are exempt from future smooth-scroll shifts.
-@export var auto_focus := false
+## Target of `auto_focus` (node reference: stays on the manager).
 @export var auto_focus_target: Node3D
-@export var debug_focus_mask := false
+## Forwarded to `settings.global_palette_lut`. The name is the main-client
+## contract: external pipeline components probe the property list and push their
+## LUT here, so it stays reachable on the manager even though the value lives in
+## the settings resource.
+var global_palette_lut: Texture2D:
+	get:
+		return get_settings().global_palette_lut
+	set(value):
+		get_settings().global_palette_lut = value
 
 @export_group("Metadata")
 ## Rendering layer reserved for the metadata camera (1-20).
@@ -171,6 +138,8 @@ var _sun_resolved := false
 ## One-shot guards for the loud diagnostics.
 var _sun_error_reported := false
 var _preview_active := false
+## Settings resource currently connected to `_on_settings_changed`.
+var _bound_settings: PixelizerSettings
 
 var _camera: PixelizerCameraBinding
 var _clouds: PixelizerCloudField
@@ -191,6 +160,19 @@ var _pre_effect_count := 0
 ## Effects added before the compositor existed; inserted once it is created.
 var _pending_pre_effects: Array[CompositorEffect] = []
 
+## Process-wide manager count + one-shot warning flag. The pipeline-wide
+## parameters (metadata bit, screen size, low-res flag, palette LUT/dither) are
+## global shader uniforms, so two live managers silently overwrite each other;
+## per-viewport managers need those to move to per-material parameters first.
+static var _live_managers := 0
+static var _multi_manager_warned := false
+
+
+## Emitted after a look field changed or the settings resource was replaced.
+## Appliers re-resolve their inherited defaults from it; other consumers may
+## re-read. The manager itself re-publishes the pipeline globals.
+signal settings_changed
+
 
 ## Register the pipeline-wide globals before any material specializes: a shader
 ## that declares a global registered later warns "removed at some point". The
@@ -198,17 +180,20 @@ var _pending_pre_effects: Array[CompositorEffect] = []
 ## finds a manager declared later in the scene.
 func _enter_tree() -> void:
 	add_to_group("pixelizer_manager")
+	_live_managers += 1
+	if _live_managers > 1 and not _multi_manager_warned:
+		_multi_manager_warned = true
+		push_warning("Pixelizer3D: %d PixelizerManager3D nodes are live in this process. Pipeline-wide parameters (metadata bit, screen size, low-res flag, palette LUT/dither) are global shader uniforms, so the managers overwrite each other; place a single manager per process. Splitting the globals per material is the prerequisite for multi-viewport support." % _live_managers)
 	if metadata_layer < 1:
 		metadata_layer = 1
 	metadata_bit = 1 << (metadata_layer - 1)
 	_ensure_services()
 	PixelizerGlobals.ensure()
 	PixelizerGlobals.set_param(PixelizerGlobals.META_BIT, metadata_bit)
-	PixelizerGlobals.set_param(PixelizerGlobals.SCREEN_SIZE, Vector2(render_resolution))
 	PixelizerGlobals.set_param(PixelizerGlobals.LOWRES_MODE, mode == Mode.LOW_RES)
-	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_LUT, global_palette_lut)
-	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_GRADING, global_palette_lut != null)
-	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_DITHER, dither_enabled)
+	# Binds (creating if needed) the look settings and publishes the palette /
+	# screen-size globals from them.
+	_bind_settings()
 
 
 ## The RefCounted helpers are safe to create in the editor (no RenderingDevice
@@ -225,6 +210,42 @@ func _ensure_services() -> void:
 		_outlines.manager = self
 	if _focus == null:
 		_focus = PixelizerFocus.new()
+
+
+## The look settings. Auto-created when the scene did not assign one, so scenes
+## authored before the settings resource keep their behaviour; assign a saved
+## `PixelizerSettings` to make the look diffable and persistable (an inline
+## auto-created resource is not saved anywhere).
+func get_settings() -> PixelizerSettings:
+	if settings == null:
+		settings = PixelizerSettings.new()
+	return settings
+
+
+func _bind_settings() -> void:
+	var active := get_settings()
+	if _bound_settings != active:
+		if _bound_settings != null and _bound_settings.changed.is_connected(_on_settings_changed):
+			_bound_settings.changed.disconnect(_on_settings_changed)
+		_bound_settings = active
+		active.changed.connect(_on_settings_changed)
+	_on_settings_changed()
+
+
+## A settings field changed (or the resource was replaced): re-publish the
+## pipeline globals, drop cached palette/outline state and notify appliers.
+func _on_settings_changed() -> void:
+	if not is_inside_tree():
+		return
+	var active := get_settings()
+	PixelizerGlobals.set_param(PixelizerGlobals.SCREEN_SIZE, Vector2(active.render_resolution))
+	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_LUT, active.global_palette_lut)
+	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_GRADING, active.global_palette_lut != null)
+	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_DITHER, active.default_dither_enabled)
+	_palette_dirty = false
+	if _outlines != null:
+		_outlines.invalidate()
+	settings_changed.emit()
 
 
 func _ready() -> void:
@@ -279,12 +300,13 @@ func _process(_delta: float) -> void:
 	_camera.snap()
 	_camera.sync_metadata_camera()
 	_camera.update_metadata_texture()
-	_focus.update_auto(auto_focus, auto_focus_target)
-	if manage_camera_size:
+	_focus.update_auto(get_settings().auto_focus, auto_focus_target)
+	if get_settings().manage_camera_size:
 		_camera.apply_managed_size(cam)
 
 
 func _exit_tree() -> void:
+	_live_managers = maxi(_live_managers - 1, 0)
 	if _camera == null:
 		return
 	if _lowres != null and _lowres.is_active():
@@ -501,6 +523,11 @@ func get_metadata_viewport() -> SubViewport:
 	return _camera.metadata_viewport
 
 
+## The manager-owned low-res display view (null until `_ready` has run).
+func get_lowres_view() -> PixelizerLowResView:
+	return _lowres
+
+
 # ── Compositor effects ───────────────────────────────────────────────────────
 
 ## One-time creation of the compositor + effect passes. Safe to call repeatedly;
@@ -688,6 +715,13 @@ func get_outline_texture() -> ImageTexture:
 	return _outlines.get_texture()
 
 
+## True when the working outline palette composites as a modulation
+## (`color *= palette_rgb * 2`, 0.5 = invisible) instead of replacing the scene
+## colour at the row's alpha. Set on the authored palette.
+func get_outline_multiply_mode() -> bool:
+	return _outlines.is_multiply()
+
+
 # ── Focus subject (reserved edge tag 255) ────────────────────────────────────
 
 ## Focus a node's subtree: every pixelized mesh gets edge tag 255. Focused
@@ -749,7 +783,7 @@ func get_base_view_width() -> float:
 
 
 func set_view_zoom(value: float) -> void:
-	view_zoom = clampf(value, 0.05, 20.0)
+	get_settings().view_zoom = clampf(value, 0.05, 20.0)
 
 
 ## Write `camera.size` for the configured resolution, density and zoom (the
@@ -770,25 +804,35 @@ func get_subtexel_remainder() -> Vector2:
 
 ## Combine with the manager's other diagnostics for a HUD line.
 func get_debug_status_line() -> String:
+	var look := get_settings()
 	var mode_name := "anchor" if mode == Mode.ANCHOR else "lowres"
 	var lines: PackedStringArray = []
 	lines.append("Pixelizer3D [%s] %s" % [mode_name, "on" if enabled else "OFF"])
-	lines.append("pixel=%d layer=%d view=%d" % [pixel_size, metadata_layer, debug_view])
+	lines.append("pixel=%d layer=%d view=%d" % [look.default_pixel_size, metadata_layer, debug_view])
 	lines.append("outline=%s occl=%s palette=%s" % [
-		"on" if outline_enabled else "off",
-		"on" if depth_occlusion else "off",
-		"yes" if outline_palette != null else "no"])
+		"on" if look.default_outline_enabled else "off",
+		"on" if look.depth_occlusion else "off",
+		"yes" if look.outline_palette != null else "no"])
 	lines.append("lut=%s dither=%s" % [
-		"yes" if global_palette_lut != null else "no",
-		"on" if dither_enabled else "off"])
+		"yes" if look.global_palette_lut != null else "no",
+		"on" if look.default_dither_enabled else "off"])
 	lines.append("rays=%s" % ["on" if _pre_effect_count > 0 else "off"])
 	lines.append("sun=%s" % ["yes" if (sun != null and is_instance_valid(sun)) else "NO"])
 	lines.append("profiles=%d" % object_profiles.size())
-	lines.append("focused=%d auto=%s" % [(_focus.count() if _focus != null else 0), "on" if auto_focus else "off"])
+	lines.append("focused=%d auto=%s" % [(_focus.count() if _focus != null else 0), "on" if look.auto_focus else "off"])
 	var remainder := get_subtexel_remainder()
-	lines.append("u/texel=%.4f remainder=(%.2f, %.2f) snap=%s" % [
-		get_texel_world_size(), remainder.x, remainder.y,
-		"on" if snap_camera else "off"])
+	var active := get_active_camera()
+	var orthographic := active != null and is_instance_valid(active) \
+		and active.projection == Camera3D.PROJECTION_ORTHOGONAL
+	if orthographic:
+		lines.append("u/texel=%.4f remainder=(%.2f, %.2f) snap=%s" % [
+			get_texel_world_size(), remainder.x, remainder.y,
+			"on" if look.snap_camera else "off"])
+	else:
+		# The macro lattice is screen-space and the snap is orthographic-only by
+		# construction; a perspective camera has no meaningful world texel.
+		lines.append("u/texel=n/a (perspective) remainder=n/a snap=%s" % [
+			"on" if look.snap_camera else "off"])
 	return "\n".join(lines)
 
 
@@ -800,9 +844,10 @@ func _update_palette_params() -> void:
 	if not _palette_dirty:
 		return
 	_palette_dirty = false
-	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_LUT, global_palette_lut)
-	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_GRADING, global_palette_lut != null)
-	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_DITHER, dither_enabled)
+	var look := get_settings()
+	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_LUT, look.global_palette_lut)
+	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_GRADING, look.global_palette_lut != null)
+	PixelizerGlobals.set_param(PixelizerGlobals.PALETTE_DITHER, look.default_dither_enabled)
 
 
 # ── Mode changes ─────────────────────────────────────────────────────────────

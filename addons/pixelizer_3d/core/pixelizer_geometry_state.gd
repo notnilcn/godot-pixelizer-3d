@@ -47,6 +47,13 @@ var _shadow_applied := false
 ## bridge swap (the only mutation the bridge performs).
 var _bridged_shaders: Dictionary = {}
 var _bridge_swapped := false
+## One-shot guards for the runtime clamps.
+var _size_clamped := false
+var _tag_clamped := false
+
+## Largest macro-pixel size the apply pass can search (mirrors `MAX_ANCHOR_SIZE`
+## in apply_pixelization.glsl; the search covers the lower-left quadrant only).
+const MAX_ANCHOR_SIZE := 5
 
 
 func _init(p_target: GeometryInstance3D = null) -> void:
@@ -107,8 +114,16 @@ func bind(manager: PixelizerManager3D) -> bool:
 	var slots := _material_slots()
 	if slots.is_empty():
 		return false
-	# Manifest lookup first: approved bridges swap shaders into the authored
-	# materials in place so they become recognized/convertible at runtime.
+	# Bail out before any swap when a slot can never be supported: the bridge
+	# mutates the authored materials in place and `unbind()` cannot undo it
+	# while the state is not applied, so a late bail would strand a swapped
+	# shader for the session. A material with an approved bridge entry counts
+	# as supported — the lookup below converts it.
+	for slot in slots:
+		if _is_unsupported_custom_material(slot.source) and not _bridge_available(slot.source):
+			return false
+	# Manifest lookup: approved bridges swap shaders into the authored materials
+	# in place so they become recognized/convertible at runtime.
 	refresh_bridge(manager_ref)
 	for slot in slots:
 		if _is_unsupported_custom_material(slot.source):
@@ -159,12 +174,24 @@ func unbind() -> void:
 
 
 ## Push the current config to the target's instance uniforms (pixel size / id /
-## colour changes are live). No-op until the state has applied.
+## colour changes are live). No-op until the state has applied. Values are
+## clamped to what the apply pass can decode (the inspector range is only a
+## hint: a script can set anything).
 func push_instance_params() -> void:
 	if not _applied or target == null or not is_instance_valid(target):
 		return
-	target.set_instance_shader_parameter("anchor_size", pixel_size)
-	target.set_instance_shader_parameter("anchor_tag", outline_id)
+	var size := clampi(pixel_size, 1, MAX_ANCHOR_SIZE)
+	if size != pixel_size and not _size_clamped:
+		_size_clamped = true
+		push_warning("Pixelizer3D: pixel_size %d on '%s' is outside 1-%d and was clamped; the apply pass searches only the lower-left %d x %d quadrant, so a larger value renders the object as sparse dots." % [
+			pixel_size, target.name, MAX_ANCHOR_SIZE, MAX_ANCHOR_SIZE, MAX_ANCHOR_SIZE])
+	target.set_instance_shader_parameter("anchor_size", size)
+	var tag := clampi(outline_id, 0, 254)
+	if tag != outline_id and not _tag_clamped:
+		_tag_clamped = true
+		push_warning("Pixelizer3D: outline tag %d on '%s' is outside 0-254 and was clamped; 255 is reserved for focused geometry and the metadata channel can only carry 0-255." % [
+			outline_id, target.name])
+	target.set_instance_shader_parameter("anchor_tag", tag)
 	target.set_instance_shader_parameter("edge_tint", outline_color)
 	target.set_instance_shader_parameter("use_grade_lut", 1 if palette_enabled else 0)
 	target.set_instance_shader_parameter("anchor_mode", int(anchor_mode))
@@ -348,6 +375,17 @@ func _is_unsupported_custom_material(material: Material) -> bool:
 			return true
 		return not _is_pixelizer_material(material, manager_ref.get_material_factory().shader)
 	return false
+
+
+## True when the registry has an admitted generated shader for this material's
+## source (the same admission rules as `PixelizerBridgeRegistry.build()`), so a
+## later `refresh_bridge()` will convert it.
+func _bridge_available(material: Material) -> bool:
+	if not (material is ShaderMaterial):
+		return false
+	if manager_ref == null or not manager_ref.auto_bridge_custom_shaders:
+		return false
+	return manager_ref.get_bridge_registry().has_mapping_for((material as ShaderMaterial).shader)
 
 
 func _is_pixelizer_material(material: Material, pixelizer_shader: Shader) -> bool:

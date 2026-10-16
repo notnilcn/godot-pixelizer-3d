@@ -24,10 +24,18 @@ const SHADER_PATH := "res://addons/pixelizer_3d/shaders/water.gdshader"
 @export var size := 4.0
 ## Plane subdivisions (vertex waves need a few).
 @export_range(1, 64) var subdivisions := 16
-## 1.0 = shallow / coast, 0.0 = deep water.
-@export_range(0.0, 1.0) var coast := 1.0
-## Per-tile animation offset (vertex waves + normal scroll).
-@export var wave_phase := 0.0
+## 1.0 = shallow / coast, 0.0 = deep water. Live: writes the instance uniform.
+@export_range(0.0, 1.0) var coast := 1.0:
+	set(value):
+		coast = value
+		set_instance_shader_parameter("coast", coast)
+## Per-tile animation offset (vertex waves + normal scroll). Live: writes the
+## instance uniform. A contiguous tile grid must leave this at 0 (see
+## water.gdshader).
+@export var wave_phase := 0.0:
+	set(value):
+		wave_phase = value
+		set_instance_shader_parameter("wave_phase", wave_phase)
 ## Noise texture for foam/whitecaps. Generated (Perlin, seed 3) when unset.
 @export var noise: Texture2D
 
@@ -39,6 +47,12 @@ static var _shared_noise: Texture2D
 
 func _ready() -> void:
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# A MeshInstance3D effect is not pixelized geometry: an applier scanning a
+	# subtree it happens to sit in must skip it instead of retrying a bind that
+	# can only warn (bind bails on the unsupported material). The point-light
+	# volume is the exception — it opts into the pipeline by registering its
+	# material.
+	add_to_group("pixelizer_ignore")
 	var plane := PlaneMesh.new()
 	plane.size = Vector2(size, size)
 	plane.subdivide_width = subdivisions
@@ -63,27 +77,19 @@ func _ready() -> void:
 
 
 func _register_material() -> void:
-	if Engine.is_editor_hint() and not _editor_preview():
-		return
 	if _material == null:
 		return
-	if manager == null:
-		manager = PixelizerManager3D.resolve_manager_explicit(self)
+	if not PixelizerEffect3D.is_live(self):
+		return
+	manager = PixelizerEffect3D.resolve(self)
 	if manager != null:
 		manager.register_cloud_material(_material)
 	else:
-		push_error("Pixelizer3D: PixelizerWater3D at '%s' found no PixelizerManager3D; the water is not a cloud receiver." % get_path())
-
-
-func _editor_preview() -> bool:
-	return manager != null and is_instance_valid(manager) and manager.editor_preview
+		PixelizerEffect3D.report_missing(self, "the water is not a cloud receiver.")
 
 
 func _get_configuration_warnings() -> PackedStringArray:
-	var warnings := PackedStringArray()
-	if PixelizerManager3D.resolve_manager_explicit(self) == null:
-		warnings.append("No PixelizerManager3D resolved; water is not registered as a cloud receiver.")
-	return warnings
+	return PixelizerEffect3D.warnings(self, "water is not registered as a cloud receiver.")
 
 
 func _exit_tree() -> void:

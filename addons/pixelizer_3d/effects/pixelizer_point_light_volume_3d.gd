@@ -62,27 +62,19 @@ func _ready() -> void:
 
 
 func _register_material() -> void:
-	if Engine.is_editor_hint() and not _editor_preview():
-		return
 	if _material == null:
 		return
-	if manager == null:
-		manager = PixelizerManager3D.resolve_manager_explicit(self)
+	if not PixelizerEffect3D.is_live(self):
+		return
+	manager = PixelizerEffect3D.resolve(self)
 	if manager != null:
 		manager.register_pixelized_material(_material)
 	else:
-		push_error("Pixelizer3D: PixelizerPointLightVolume3D at '%s' found no PixelizerManager3D; the volume is not pixelizer-registered." % get_path())
-
-
-func _editor_preview() -> bool:
-	return manager != null and is_instance_valid(manager) and manager.editor_preview
+		PixelizerEffect3D.report_missing(self, "the volume is not pixelizer-registered.")
 
 
 func _get_configuration_warnings() -> PackedStringArray:
-	var warnings := PackedStringArray()
-	if PixelizerManager3D.resolve_manager_explicit(self) == null:
-		warnings.append("No PixelizerManager3D resolved; the volume is not registered with the pixelizer.")
-	return warnings
+	return PixelizerEffect3D.warnings(self, "the volume is not registered with the pixelizer.")
 
 
 func _exit_tree() -> void:

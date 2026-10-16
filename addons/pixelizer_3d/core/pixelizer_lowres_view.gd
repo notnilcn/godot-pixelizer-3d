@@ -24,6 +24,21 @@ func is_active() -> bool:
 	return _viewport != null
 
 
+## World units covered by one texel of the low-res render target: the mirror
+## camera's view size over the display viewport's size (the user camera and the
+## window must not be measured here — the rendering camera is the mirror inside
+## the SubViewport). Respects keep_aspect like the anchor path.
+func get_texel_world_size() -> float:
+	if _mirror_camera == null or _viewport == null:
+		return 0.0
+	var viewport_size := Vector2(_viewport.size)
+	if viewport_size.x <= 0.0 or viewport_size.y <= 0.0:
+		return 0.0
+	if _mirror_camera.keep_aspect == Camera3D.KEEP_WIDTH:
+		return _mirror_camera.size / viewport_size.x
+	return _mirror_camera.size / viewport_size.y
+
+
 func enter(camera: Camera3D) -> bool:
 	if _viewport != null:
 		return true
@@ -39,7 +54,7 @@ func enter(camera: Camera3D) -> bool:
 	_container.name = "LowResContainer"
 	_container.stretch = false
 	_container.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	_container.size = Vector2(manager.render_resolution)
+	_container.size = Vector2(manager.get_settings().render_resolution)
 	_material = ShaderMaterial.new()
 	_material.shader = load(UPSCALE_SHADER) as Shader
 	_container.material = _material
@@ -47,7 +62,7 @@ func enter(camera: Camera3D) -> bool:
 
 	_viewport = SubViewport.new()
 	_viewport.name = "LowResViewport"
-	_viewport.size = manager.render_resolution
+	_viewport.size = manager.get_settings().render_resolution
 	_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
 	_viewport.msaa_3d = Viewport.MSAA_DISABLED
@@ -129,3 +144,4 @@ func update_display() -> void:
 	# upscaler the exact source resolution it is reconstructing.
 	_material.set_shader_parameter("scroll_shift", manager.get_subtexel_remainder())
 	_material.set_shader_parameter("source_size", render_size)
+

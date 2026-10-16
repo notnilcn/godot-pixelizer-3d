@@ -99,6 +99,14 @@ func is_generated_shader(shader: Shader) -> bool:
 	return shader != null and _outputs.has(shader.resource_path)
 
 
+## True when `shader` has an admitted source -> generated mapping, regardless of
+## whether the generated resource loads. Mirrors `build()`'s admission rules
+## (approved, version-current, output exists) and is used to decide whether a
+## material is "supported" before a bind bails out.
+func has_mapping_for(shader: Shader) -> bool:
+	return shader != null and not shader.resource_path.is_empty() and _map.has(shader.resource_path)
+
+
 func get_mapped_count() -> int:
 	return _mapped_count
 

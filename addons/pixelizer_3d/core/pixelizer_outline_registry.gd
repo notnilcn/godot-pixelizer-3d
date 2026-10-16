@@ -24,8 +24,9 @@ func allocate_id() -> int:
 ## Set a tag's outline colour for both the silhouette and inner-edge rows, so an
 ## override covers every visible outline of that tag. The colour's alpha is the
 ## row opacity: alpha 0 hides the outline entirely, 1 replaces the scene colour.
+## Id 255 is the focus subject's row (not auto-allocated, but settable).
 func set_color(id: int, color: Color) -> void:
-	if id < 0 or id > 254:
+	if id < 0 or id > 255:
 		return
 	_ensure_working()
 	_working.set_entry(id, color, color, color.a, color.a)
@@ -39,10 +40,10 @@ func set_color(id: int, color: Color) -> void:
 ## `outline_palette` when set, else the manager's `outline_color` (whose alpha is
 ## the restored opacity).
 func set_enabled(id: int, enabled: bool) -> void:
-	if id < 0 or id > 254:
+	if id < 0 or id > 255:
 		return
 	_ensure_working()
-	var palette: PixelizerOutlinePalette = manager.outline_palette
+	var palette: PixelizerOutlinePalette = manager.get_settings().outline_palette
 	if enabled and palette != null and id < palette.silhouette_colors.size():
 		_working.set_entry(
 			id,
@@ -51,7 +52,7 @@ func set_enabled(id: int, enabled: bool) -> void:
 			palette.silhouette_alpha[id],
 			palette.inner_alpha[id])
 	elif enabled:
-		var color: Color = manager.outline_color
+		var color: Color = manager.get_settings().default_outline_color
 		_working.set_entry(id, color, color, color.a, color.a)
 	else:
 		_working.set_entry(id, Color.WHITE, Color.WHITE, 0.0, 0.0)
@@ -66,6 +67,13 @@ func get_texture() -> ImageTexture:
 	return _texture
 
 
+## Composite mode of the working palette (see
+## `PixelizerOutlinePalette.multiply_colors`).
+func is_multiply() -> bool:
+	_ensure_working()
+	return _working.multiply_colors
+
+
 ## Drop the working copy so the next use reseeds from the authored palette /
 ## manager colour (call when those change).
 func invalidate() -> void:
@@ -77,14 +85,16 @@ func _ensure_working() -> void:
 	if _working != null:
 		return
 	_working = PixelizerOutlinePalette.new()
-	var palette: PixelizerOutlinePalette = manager.outline_palette
+	var palette: PixelizerOutlinePalette = manager.get_settings().outline_palette
 	if palette != null:
 		_working.silhouette_colors = palette.silhouette_colors.duplicate()
 		_working.inner_colors = palette.inner_colors.duplicate()
 		_working.silhouette_alpha = palette.silhouette_alpha.duplicate()
 		_working.inner_alpha = palette.inner_alpha.duplicate()
+		_working.multiply_colors = palette.multiply_colors
 	else:
-		var color: Color = manager.outline_color
+		var color: Color = manager.get_settings().default_outline_color
 		for i in PixelizerOutlinePalette.ROW_COUNT:
 			_working.set_entry(i, color, color, color.a, color.a)
 	_dirty = true
+

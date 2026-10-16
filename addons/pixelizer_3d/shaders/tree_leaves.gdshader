@@ -114,7 +114,10 @@ void fragment() {
 	// card centre (view space) so the swaying billboard shades as one unit.
 	LIGHT_VERTEX = f_card_center_view;
 	vec4 tex = texture(albedo_texture, f_uv);
-	ANCHOR_CLIP(tex.a * tint.a);
+	// Cutout card: 0.5 is this shader's minimum scissor (the material's
+	// `alpha_scissor` can raise it). Leaf atlases are alpha masks, so the
+	// uniform's 0.0 default would render the quad opaque.
+	ANCHOR_CLIP_AT(tex.a * tint.a, 0.5);
 	if (ANCHOR_META_ACTIVE(0)) {
 		ANCHOR_META_LIGHT(0);
 	} else {

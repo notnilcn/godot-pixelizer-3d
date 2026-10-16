@@ -22,6 +22,7 @@
 [ext_resource type="Shader" uid="uid://dr4hogpv55lpw" path="res://addons/pixelizer_3d/shaders/sky_clouds.gdshader" id="19_6ihnu"]
 [ext_resource type="Resource" uid="uid://c8jsbp0w8nflh" path="res://pixelizer_bridges/pixelizer_bridge_manifest.tres" id="19_bridge_manifest_res"]
 [ext_resource type="Script" uid="uid://cpyhokopcry0s" path="res://addons/pixelizer_3d/effects/pixelizer_god_rays_3d.gd" id="21_62gnj"]
+[ext_resource type="Script" uid="uid://c1167m3difikb" path="res://addons/pixelizer_3d/core/pixelizer_settings.gd" id="22_settings"]
 [ext_resource type="Shader" uid="uid://brpw58px1beln" path="res://addons/pixelizer_3d/shaders/water.gdshader" id="21_mosls"]
 
 [sub_resource type="Environment" id="Environment_yamcw"]
@@ -157,6 +158,11 @@ size = Vector2(4, 4)
 subdivide_width = 16
 subdivide_depth = 16
 
+[sub_resource type="Resource" id="Resource_settings"]
+script = ExtResource("22_settings")
+default_pixel_size = 5
+snap_camera = false
+
 [node name="demo" type="Node3D" unique_id=255699867]
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1209454384]
@@ -168,8 +174,7 @@ transform = Transform3D(1, 0, 0, 0, 0.4617486, 0.8870109, 0, -0.8870109, 0.46174
 [node name="PixelizerManager3D" type="Node3D" parent="." unique_id=1110914205 node_paths=PackedStringArray("sun")]
 script = ExtResource("2_manager")
 sun = NodePath("../DirectionalLight3D")
-pixel_size = 5
-snap_camera = false
+settings = SubResource("Resource_settings")
 bridge_manifests = Array[ExtResource("18_bridge_manifest")]([ExtResource("19_bridge_manifest_res")])
 auto_bridge_custom_shaders = true
 metadata/_custom_type_script = "uid://kg625atl872n"
@@ -275,7 +280,6 @@ metadata/_custom_type_script = "uid://8ve0rur2ja1t"
 script = ExtResource("17_overlay")
 
 [node name="PixelizerEffects" type="Node3D" parent="." unique_id=554533680]
-visible = false
 
 [node name="PixelizerSkyClouds3D" type="MeshInstance3D" parent="PixelizerEffects" unique_id=2036841265 node_paths=PackedStringArray("manager")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1200, 0)
@@ -296,7 +300,7 @@ enabled = true
 metadata/_custom_type_script = "uid://cpyhokopcry0s"
 
 [node name="PixelizerWater3D" type="MeshInstance3D" parent="PixelizerEffects" unique_id=1343136534 node_paths=PackedStringArray("manager")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.70635986, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.15, 0)
 material_override = SubResource("ShaderMaterial_xam2y")
 cast_shadow = 0
 instance_shader_parameters/coast = 1.0
@@ -309,9 +313,5 @@ metadata/_custom_type_script = "uid://dcfvcr2m3og3k"
 [node name="PixelizerFireflies3D" type="Node3D" parent="PixelizerEffects" unique_id=817778010]
 script = ExtResource("7_firefly")
 
-[node name="PixelizerApplier3D2" type="Node3D" parent="." unique_id=518761167]
-script = ExtResource("6_applier")
-metadata/_custom_type_script = "uid://btdtpfyyn50j0"
-
-[node name="Barbarian" parent="PixelizerApplier3D2" unique_id=2111390972 instance=ExtResource("6_k1rqu")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 0.5, 0)
+[node name="Barbarian" parent="PixelizerApplier3D/Node3D" unique_id=2111390972 instance=ExtResource("6_k1rqu")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 0, 0)

@@ -77,6 +77,37 @@ func _ready() -> void:
 	if _camera != null:
 		_camera.current = true
 	_update_camera()
+	if DemoCapture.is_requested():
+		var host := get_tree().current_scene
+		if host != null:
+			# The scene root may still be setting up children in this frame.
+			host.add_child.call_deferred(DemoCapture.parse())
+
+
+## Apply a named camera preset (used by the capture CLI; see `demo/capture.gd`):
+## `overhead` (the authored rig), `wide`, `characters` (looks along +X at the
+## character row). Returns false for an unknown name.
+func apply_camera_preset(preset: String) -> bool:
+	match preset:
+		"overhead":
+			_yaw = 0.0
+			_pitch = deg_to_rad(89.9)
+			_distance = 24.0
+		"wide":
+			_yaw = 0.0
+			_pitch = deg_to_rad(62.0)
+			_distance = 34.0
+		"characters":
+			# The row extends along +X; yaw -90 puts the camera at -X looking +X.
+			_yaw = deg_to_rad(-90.0)
+			_pitch = deg_to_rad(62.0)
+			_distance = 26.0
+		_:
+			return false
+	_pitch = clampf(_pitch, deg_to_rad(pitch_min_deg), deg_to_rad(pitch_max_deg))
+	_distance = clampf(_distance, min_distance, max_distance)
+	_update_camera()
+	return true
 
 
 ## Runtime keybind actions (same idempotent pattern as demo.gd's

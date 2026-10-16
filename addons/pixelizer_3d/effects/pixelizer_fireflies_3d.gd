@@ -20,6 +20,9 @@ extends Node3D
 ## the rest apply live.
 
 @export_range(0, 256) var firefly_count := 24: set = _set_firefly_count
+## Optional manager override (resolved explicitly when unset). Used to register
+## the glow material with the pixelizer.
+@export var manager: PixelizerManager3D
 ## Horizontal wander radius of the spawn volume.
 @export var radius := 4.0: set = _set_radius
 ## Vertical extent (fireflies stay between ~0 and `height`).
@@ -161,7 +164,9 @@ func _rebuild() -> void:
 func _register_glow_material() -> void:
 	if _glow_material == null:
 		return
-	var manager := PixelizerManager3D.resolve_manager_explicit(self)
+	if not PixelizerEffect3D.is_live(self):
+		return
+	manager = PixelizerEffect3D.resolve(self)
 	if manager != null:
 		manager.register_pixelized_material(_glow_material)
 
@@ -169,8 +174,7 @@ func _register_glow_material() -> void:
 func _unregister_glow_material() -> void:
 	if _glow_material == null:
 		return
-	var manager := PixelizerManager3D.resolve_manager_explicit(self)
-	if manager != null:
+	if manager != null and is_instance_valid(manager):
 		manager.unregister_pixelized_material(_glow_material)
 	_glow_material = null
 

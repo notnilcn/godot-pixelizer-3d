@@ -9,6 +9,12 @@ extends PixelizerEffectBase
 const CONTEXT := &"pixelizer"
 const COPY_TEXTURE := &"color_copy"
 const DEPTH_COPY_TEXTURE := &"depth_copy"
+## The engine's normal-roughness target, a named scene-buffer texture (Forward+
+## registers it as `forward_clustered / normal_roughness`). Present only when
+## the renderer generated it (SSAO/SSIL/SSR, or a material sampling
+## `hint_normal_roughness_texture`); otherwise the crease term is skipped.
+const NR_SCOPE := &"forward_clustered"
+const NR_TEXTURE := &"normal_roughness"
 
 const SAMPLE_COUNT := RenderingDevice.TEXTURE_SAMPLES_1
 
@@ -25,7 +31,10 @@ var _last_copy := RID()
 var _last_metadata := RID()
 var _last_depth_copy := RID()
 var _last_outline := RID()
+var _last_normal := RID()
 var _uniforms: Array = []
+## One-shot guard for the normal-roughness availability warning.
+var _normal_warned := false
 ## Cached push-constant array + bytes; rebuilt only when an input changes.
 var _push := PackedFloat32Array()
 var _push_bytes := PackedByteArray()
@@ -75,6 +84,20 @@ func _render_callback(p_callback_type: int, p_render_data: RenderData) -> void:
 	var depth_rid := buffers.get_depth_layer(0)
 	if not copy_rid.is_valid() or not depth_copy_rid.is_valid() or not color_rid.is_valid() or not depth_rid.is_valid():
 		return
+	# Optional crease source. When unavailable, bind the metadata texture as a
+	# dummy (the shader's `> 0` guard never samples it) and pass threshold 0.
+	var look: PixelizerSettings = manager.get_settings()
+	var normal_threshold: float = look.outline_normal_threshold
+	var normal_rid := RID()
+	if normal_threshold > 0.0 and buffers.has_texture(NR_SCOPE, NR_TEXTURE):
+		normal_rid = buffers.get_texture(NR_SCOPE, NR_TEXTURE)
+	if not normal_rid.is_valid():
+		normal_rid = metadata_rid
+		if normal_threshold > 0.0:
+			normal_threshold = 0.0
+			if not _normal_warned:
+				_normal_warned = true
+				push_warning("Pixelizer3D: outline_normal_threshold is set but the engine's normal-roughness buffer is not available; enable SSAO/SSIL/SSR (or a material sampling `hint_normal_roughness_texture`) for the crease term. It stays off until then.")
 
 	# Framebuffer format is derived from the engine textures themselves (the
 	# RenderSceneBuffers format descriptions can disagree with the actual RIDs).
@@ -90,19 +113,22 @@ func _render_callback(p_callback_type: int, p_render_data: RenderData) -> void:
 	var projection := scene_data.get_cam_projection()
 	var is_ortho := 1.0 if projection.is_orthogonal() else 0.0
 
-	if copy_rid != _last_copy or metadata_rid != _last_metadata or depth_copy_rid != _last_depth_copy or outline_rid != _last_outline:
+	if copy_rid != _last_copy or metadata_rid != _last_metadata or depth_copy_rid != _last_depth_copy \
+			or outline_rid != _last_outline or normal_rid != _last_normal:
 		_last_copy = copy_rid
 		_last_metadata = metadata_rid
 		_last_depth_copy = depth_copy_rid
 		_last_outline = outline_rid
+		_last_normal = normal_rid
 		_uniforms = [
 			_make_sampler_uniform(_sampler, copy_rid, 0),
 			_make_sampler_uniform(_sampler, metadata_rid, 1),
 			_make_sampler_uniform(_sampler, depth_copy_rid, 2),
 			_make_sampler_uniform(_sampler, outline_rid, 3),
+			_make_sampler_uniform(_sampler, normal_rid, 4),
 		]
 	var uniform_set := UniformSetCacheRD.get_cache(_shader, 0, _uniforms)
-	# 12 floats / 48 bytes; must match apply_pixelization.glsl's Params struct
+	# 16 floats / 64 bytes; must match apply_pixelization.glsl's Params struct
 	# byte for byte. Outline colour rides the palette, not the push block.
 	# Rebuild the packed array/bytes only when an input changes.
 	var push := PackedFloat32Array([
@@ -112,11 +138,15 @@ func _render_callback(p_callback_type: int, p_render_data: RenderData) -> void:
 		projection.get_z_far(),
 		is_ortho,
 		float(manager.debug_view),
-		1.0 if manager.depth_occlusion else 0.0,
-		1.0 if manager.outline_enabled else 0.0,
-		manager.outline_threshold,
+		1.0 if look.depth_occlusion else 0.0,
+		1.0 if look.default_outline_enabled else 0.0,
+		look.outline_threshold,
+		look.outline_interior_threshold,
+		normal_threshold,
+		1.0 if manager.get_outline_multiply_mode() else 0.0,
+		1.0 if look.debug_focus_mask else 0.0,
 		1.0,
-		1.0 if manager.debug_focus_mask else 0.0,
+		0.0,
 		0.0,
 	])
 	if push != _push:

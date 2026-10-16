@@ -2,12 +2,15 @@
 class_name DitherMatrix
 extends Resource
 
-## A 4x4 ordered dither threshold matrix, stored as 16 floats in [0, 1].
+## A 4x4 ordered dither threshold matrix, stored as 16 floats in (0, 1].
 ##
 ## The default values are generated from [method bayer_index] (the recursive
 ## Bayer construction) rather than pasted as a literal table, so the resource
 ## and the GLSL `anchor_bayer_index()` in `anchor_macros.gdshaderinc` share one
-## algorithmic definition. Indexing is x-major: `index = 4 * (x % 4) + (y % 4)`.
+## algorithmic definition. Thresholds are `(index + 1) / 17`, matching the
+## shader's alpha dither cell for cell (`anchor_bayer` returns the same value):
+## every cell has a nonzero threshold and the range spans (0, 1). Indexing is
+## x-major: `index = 4 * (x % 4) + (y % 4)`.
 
 const SIZE := 4
 
@@ -33,13 +36,15 @@ static func bayer_index(x: int, y: int) -> int:
 	return bayer2(x & 1, y & 1) * 4 + bayer2((x >> 1) & 1, (y >> 1) & 1)
 
 
-## The default threshold table, generated in x-major order.
+## The default threshold table, generated in x-major order. `(index + 1) / 17`
+## (not `index / 17`): the shader's alpha dither uses the same `+1`, so the LUT
+## bands and the discard test agree cell for cell.
 static func _default_values() -> PackedFloat32Array:
 	var out := PackedFloat32Array()
-	out.resize(16)
-	for x in 4:
-		for y in 4:
-			out[4 * x + y] = float(bayer_index(x, y)) / 17.0
+	out.resize(SIZE * SIZE)
+	for x in SIZE:
+		for y in SIZE:
+			out[4 * x + y] = (float(bayer_index(x, y)) + 1.0) / 17.0
 	return out
 
 
@@ -55,6 +60,6 @@ func pick_first(fraction: float, index: int) -> bool:
 	return values[clampi(index, 0, 15)] > fraction
 
 
-## The classic 4x4 ordered dither pattern (values n/17).
+## The classic 4x4 ordered dither pattern (thresholds `(n + 1) / 17`).
 static func ordered_4x4() -> DitherMatrix:
 	return DitherMatrix.new()

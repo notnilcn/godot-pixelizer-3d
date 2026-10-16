@@ -51,6 +51,7 @@ var cloud_noise_scale := 0.05
 var cloud_threshold := 0.5
 var cloud_bands := 3.0
 var cloud_tightness := 1.0
+var cloud_octave_drop := 0.5
 var cloud_gap_erosion := 0.0
 var cloud_detail_strength := 0.0
 var cloud_wind := Vector2(0.02, 0.0)
@@ -133,6 +134,8 @@ func set_cloud_params(params: Dictionary) -> void:
 		cloud_bands = params["cloud_bands"]
 	if params.has("cloud_tightness"):
 		cloud_tightness = params["cloud_tightness"]
+	if params.has("cloud_octave_drop"):
+		cloud_octave_drop = params["cloud_octave_drop"]
 	if params.has("cloud_gap_erosion"):
 		cloud_gap_erosion = params["cloud_gap_erosion"]
 	if params.has("cloud_detail_strength"):
@@ -190,7 +193,8 @@ func _render_callback(p_callback_type: int, p_render_data: RenderData) -> void:
 	values[i] = cloud_gap_erosion; values[i + 1] = cloud_detail_strength
 	# Wall clock otherwise: the ray field drifts with real time, which breaks
 	# byte-reproducible captures (shader TIME under --fixed-fps does not).
-	values[i + 2] = time_override if time_override >= 0.0 else Time.get_ticks_msec() / 1000.0; i += 4
+	values[i + 2] = time_override if time_override >= 0.0 else Time.get_ticks_msec() / 1000.0
+	values[i + 3] = cloud_octave_drop; i += 4
 	values[i] = cloud_wind.x; values[i + 1] = cloud_wind.y; i += 4
 	values[i] = ray_max_distance; values[i + 1] = ray_intensity; values[i + 2] = ray_decay; values[i + 3] = ray_quantize_bands; i += 4
 	values[i] = ray_dust_strength; values[i + 1] = float(ray_steps)

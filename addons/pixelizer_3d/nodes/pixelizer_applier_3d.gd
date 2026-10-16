@@ -104,17 +104,18 @@ extends Node3D
 
 const BRIDGE_WATCH_INTERVAL := 0.25
 
-## Inheritable settings. `manager` names the manager property used as the final
-## fallback ("" when the manager has no equivalent); `default` is the built-in
-## value. A property equal to the manager's `inherit_sentinel` falls through.
+## Inheritable settings. `settings` names the `PixelizerSettings` property used
+## as the final fallback ("" when the settings have no equivalent); `default` is
+## the built-in value. A property equal to the manager's `inherit_sentinel`
+## falls through.
 const INHERITED_SETTINGS := {
-	"pixel_size": {"manager": "pixel_size", "default": 3},
-	"palette_enabled": {"manager": "", "default": 1},
-	"dither_enabled": {"manager": "dither_enabled", "default": 1},
-	"anchor_mode": {"manager": "", "default": 0},
-	"outline_enabled": {"manager": "outline_enabled", "default": 1},
-	"shadow_casting": {"manager": "", "default": 1},
-	"mover_snap": {"manager": "mover_snap", "default": 0},
+	"pixel_size": {"settings": "default_pixel_size", "default": 3},
+	"palette_enabled": {"settings": "", "default": 1},
+	"dither_enabled": {"settings": "default_dither_enabled", "default": 1},
+	"anchor_mode": {"settings": "", "default": 0},
+	"outline_enabled": {"settings": "default_outline_enabled", "default": 1},
+	"shadow_casting": {"settings": "", "default": 1},
+	"mover_snap": {"settings": "default_mover_snap", "default": 0},
 }
 
 ## geometry instance id -> PixelizerGeometryState.
@@ -270,6 +271,12 @@ func rescan() -> void:
 			(child as PixelizerApplier3D).rescan()
 
 
+## Number of geometry nodes this applier currently tracks (bound or waiting for
+## materials). The diagnostics object panel labels the applier section with it.
+func get_bound_state_count() -> int:
+	return _states.size()
+
+
 ## Called when a `PixelizerObjectProfile` changes so the bound geometry refreshes.
 func reconfigure(geometry: GeometryInstance3D) -> void:
 	if geometry == null or not is_instance_valid(geometry) or not is_ancestor_of(geometry):
@@ -295,16 +302,26 @@ func _editor_preview() -> bool:
 ## sibling `PixelizerManager3D`). Never creates one.
 func _find_manager() -> void:
 	if manager != null and is_instance_valid(manager):
-		_connect_manager_exit()
+		_connect_manager_signals()
 		return
 	manager = PixelizerManager3D.resolve_manager_explicit(self)
 	if manager != null:
-		_connect_manager_exit()
+		_connect_manager_signals()
 
 
-func _connect_manager_exit() -> void:
-	if manager != null and not manager.tree_exiting.is_connected(_on_manager_tree_exiting):
+func _connect_manager_signals() -> void:
+	if manager == null:
+		return
+	if not manager.tree_exiting.is_connected(_on_manager_tree_exiting):
 		manager.tree_exiting.connect(_on_manager_tree_exiting, CONNECT_ONE_SHOT)
+	if not manager.settings_changed.is_connected(_on_settings_changed):
+		manager.settings_changed.connect(_on_settings_changed)
+
+
+## A look-settings change alters inherited defaults: re-derive this subtree.
+func _on_settings_changed() -> void:
+	if _ready_done:
+		_refresh_children()
 
 
 ## One loud report per applier when no manager resolves.
@@ -373,11 +390,24 @@ func _pixelize_geometry(instance: GeometryInstance3D) -> void:
 		_apply_effective_to_state(state)
 	if state.is_applied():
 		state.apply_shadow_setting()
+		# Re-run the manifest lookup: a system may have replaced the material
+		# after the first bind (MST's runtime texture baker swaps every chunk
+		# mesh to its own baked shader). A swap re-arms the watchdog so the next
+		# replacement is bridged too.
+		if state.refresh_bridge(manager) and not _watch_ids.has(id):
+			_watch_ids[id] = state
+			set_process(true)
 		state.push_instance_params()
 		_apply_mover(instance)
 		return
 	if state.bind(manager):
 		_apply_mover(instance)
+		if state.bridge_swapped():
+			# A swap happened, so the owning system may swap again later; keep
+			# polling. (Only a failed bind used to arm the watchdog, so a
+			# successful bind that swapped was never re-checked.)
+			_watch_ids[id] = state
+			set_process(true)
 		return
 	if state.has_no_materials() or state.bridge_swapped():
 		_watch_ids[id] = state
@@ -436,6 +466,9 @@ func _apply_mover(instance: GeometryInstance3D) -> void:
 ## Throttled bridge poll over the watched states: retry the bind while there is
 ## nothing to inspect yet, and re-run the manifest lookup on already-applied
 ## states (MST's runtime texture baker swaps materials after the first bind).
+## Entries are intentionally not pruned once they settle: a system can replace a
+## bridged material arbitrarily later, and the set is bounded by the subtree's
+## geometry count.
 func _poll_bridge_watch() -> void:
 	var dead: Array = []
 	for id in _watch_ids:
@@ -481,8 +514,8 @@ func _resolve_effective() -> void:
 
 
 ## One setting, resolved nearest-author-wins: this applier (when it is not the
-## inherit sentinel), then ancestor appliers, then the manager property, then the
-## built-in default.
+## inherit sentinel), then ancestor appliers, then the manager's look settings,
+## then the built-in default.
 func _resolve_setting(setting: String) -> int:
 	var spec: Dictionary = INHERITED_SETTINGS[setting]
 	if not PixelizerInherit.is_inherit(int(get(setting)), _sentinel()):
@@ -490,10 +523,12 @@ func _resolve_setting(setting: String) -> int:
 	var parent := _parent_applier()
 	if parent != null:
 		return parent._resolve_setting(setting)
-	var manager_property: String = spec["manager"]
-	if manager_property != "" and manager != null:
-		var value = manager.get(manager_property)
-		return (1 if value else 0) if value is bool else int(value)
+	var settings_property: String = spec["settings"]
+	if settings_property != "" and _manager_valid():
+		var look: PixelizerSettings = manager.get_settings()
+		if look != null:
+			var value = look.get(settings_property)
+			return (1 if value else 0) if value is bool else int(value)
 	return int(spec["default"])
 
 

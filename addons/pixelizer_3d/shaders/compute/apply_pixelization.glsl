@@ -27,8 +27,13 @@ layout(set = 0, binding = 0) uniform sampler2D source_color;
 layout(set = 0, binding = 1) uniform sampler2D metadata_texture;
 layout(set = 0, binding = 2) uniform sampler2D depth_copy;
 layout(set = 0, binding = 3) uniform sampler2D outline_palette;
+// The engine's normal-roughness target (`RGB = view-space normal * 0.5 + 0.5`,
+// roughness in A; see the Forward+ normal-roughness pass). Bound to a dummy
+// sampler unless `outline_normal_threshold > 0` and the renderer generated the
+// buffer (SSAO/SSIL/SSR or a material using `hint_normal_roughness_texture`).
+layout(set = 0, binding = 4) uniform sampler2D normal_roughness_texture;
 
-// 12 floats / 48 bytes (must match the GDScript push array byte for byte).
+// 16 floats / 64 bytes (must match the GDScript push array byte for byte).
 // outline_color was removed: the palette path is unconditional, so the outline
 // colour always comes from `outline_palette`. `palette_enabled` is reserved.
 layout(push_constant, std430) uniform Params {
@@ -40,10 +45,24 @@ layout(push_constant, std430) uniform Params {
 	float depth_occlusion;
 	float outline_enabled;
 	float outline_threshold;
-	float palette_enabled;
+	float outline_interior_threshold;
+	float outline_normal_threshold;
+	float outline_multiply;
 	float debug_focus_mask;
+	float palette_enabled;
 	float pad0;
+	float pad1;
 } params;
+
+// The outline palette is baked from authored (sRGB) colours into an 8-bit
+// RGBA8 texture sampled without an sRGB view, so the shader must linearise it:
+// the LUT grading already treats palette colours as gamma-space (see
+// anchor_macros.gdshaderinc). Exact sRGB EOTF (matches Color.srgb_to_linear).
+vec3 srgb_to_linear(vec3 c) {
+	vec3 low = c / 12.92;
+	vec3 high = pow((c + vec3(0.055)) / 1.055, vec3(2.4));
+	return mix(low, high, step(vec3(0.04045), c));
+}
 
 float linearize_depth(float raw) {
 	if (params.is_ortho > 0.5) {
@@ -161,7 +180,18 @@ void main() {
 
 	// Screen-space outlines: mark a whole macro block when its anchor sits next
 	// to a different id, to the background, or across a depth discontinuity.
-	if (params.outline_enabled > 0.5) {
+	// A block that is not the visible surface (`revert`) must not ink its
+	// neighbours: a pixelized object behind a non-pixelized wall would
+	// otherwise paint an outline onto the wall.
+	//
+	// Depth discontinuities use a SECOND difference (`2*centre - a - b`) and
+	// only mark where the centre is the nearer (convex) side, so a slope at any
+	// angle stays clean — a first difference marks every slope past the
+	// threshold, which is why an outlined terrain floods with outline blocks.
+	// A step beyond `outline_interior_threshold` is an exterior edge (silhouette
+	// row); a smaller one is an interior detail (inner row). Tag changes and
+	// the background test are unchanged (either side marks).
+	if (params.outline_enabled > 0.5 && !revert) {
 		vec4 anchor_meta = texture(metadata_texture, snapped_uv);
 		float anchor_ps = round(anchor_meta.r * 32.0);
 		if (anchor_ps > 0.5) {
@@ -170,6 +200,7 @@ void main() {
 			vec2 macro_step = texel * anchor_ps;
 			bool silhouette_edge = false;
 			bool inner_edge = false;
+			bool exterior_edge = false;
 			vec4 meta_left = texture(metadata_texture, snapped_uv - vec2(macro_step.x, 0.0));
 			vec4 meta_right = texture(metadata_texture, snapped_uv + vec2(macro_step.x, 0.0));
 			vec4 meta_down = texture(metadata_texture, snapped_uv - vec2(0.0, macro_step.y));
@@ -182,28 +213,68 @@ void main() {
 					silhouette_edge = true;
 				} else if (abs(neighbour.g - anchor_id) > 0.001953125) {
 					inner_edge = true;
-				} else if (abs(neighbour.b - anchor_depth) > params.outline_threshold * max(anchor_depth, 1.0)) {
+				}
+			}
+			// Per-axis second difference; both neighbours on the axis must be
+			// pixelized. `curve > 0` means the centre block is the convex side.
+			float depth_scale = max(anchor_depth, 1.0);
+			if (round(meta_left.r * 32.0) > 0.5 && round(meta_right.r * 32.0) > 0.5) {
+				float curve = (2.0 * anchor_depth - meta_left.b - meta_right.b) / depth_scale;
+				if (curve > params.outline_interior_threshold) {
+					exterior_edge = true;
+				} else if (curve > params.outline_threshold) {
 					inner_edge = true;
 				}
 			}
-			if (silhouette_edge || inner_edge) {
+			if (round(meta_down.r * 32.0) > 0.5 && round(meta_up.r * 32.0) > 0.5) {
+				float curve = (2.0 * anchor_depth - meta_down.b - meta_up.b) / depth_scale;
+				if (curve > params.outline_interior_threshold) {
+					exterior_edge = true;
+				} else if (curve > params.outline_threshold) {
+					inner_edge = true;
+				}
+			}
+			// Crease term: a normal-direction change across one macro step, which
+			// depth alone cannot see when both sides sit at the same depth
+			// (a wall/floor junction). Skipped on silhouettes (they already
+			// mark) and when no normal buffer is bound (threshold 0).
+			if (params.outline_normal_threshold > 0.0 && !silhouette_edge) {
+				vec2 offsets[4] = vec2[](
+					vec2(-macro_step.x, 0.0), vec2(macro_step.x, 0.0),
+					vec2(0.0, -macro_step.y), vec2(0.0, macro_step.y));
+				vec3 centre_normal = normalize(texture(normal_roughness_texture, snapped_uv).xyz * 2.0 - 1.0);
+				for (int i = 0; i < 4; i++) {
+					vec3 neighbour_normal = normalize(
+						texture(normal_roughness_texture, snapped_uv + offsets[i]).xyz * 2.0 - 1.0);
+					if (1.0 - dot(centre_normal, neighbour_normal) > params.outline_normal_threshold) {
+						inner_edge = true;
+					}
+				}
+			}
+			if (silhouette_edge || exterior_edge || inner_edge) {
 				// The outline colour always comes from the palette (the manager
-				// writes the white/multiply "off" row for hidden tags).
-				float row = silhouette_edge ? 0.25 : 0.75;
+				// writes the opacity-0 "off" row for hidden tags). Opacity mode
+				// replaces; multiply mode (rows authored around 0.5) modulates.
+				float row = (silhouette_edge || exterior_edge) ? 0.25 : 0.75;
 				float id_int = round(anchor_id * 256.0);
 				vec4 palette_row = texture(outline_palette, vec2((id_int + 0.5) / 256.0, row));
-				// Alpha is an opacity: 0 leaves the scene colour, 1 replaces it.
-				color = mix(color, palette_row.rgb, palette_row.a);
+				vec3 outline_rgb = srgb_to_linear(palette_row.rgb);
+				if (params.outline_multiply > 0.5) {
+					color *= outline_rgb * 2.0;
+				} else {
+					color = mix(color, outline_rgb, palette_row.a);
+				}
 			}
 		}
 	}
 
-	// Debug: tint focused (tag 255) blocks red.
-	if (params.debug_focus_mask > 0.5) {
+	// Debug: tint focused (tag 255) blocks red. Not on reverted (occluded)
+	// pixels, same as the outline.
+	if (params.debug_focus_mask > 0.5 && !revert) {
 		vec4 focus_meta = texture(metadata_texture, snapped_uv);
 		float focus_id = round(focus_meta.g * 256.0);
 		if (focus_id >= 254.5) {
-			color = mix(color, vec3(1.0, 0.0, 0.0), 0.5);
+			color = mix(color, srgb_to_linear(vec3(1.0, 0.0, 0.0)), 0.5);
 		}
 	}
 

@@ -236,10 +236,18 @@ vec3 anchor_grade(vec3 anchor_base, vec3 anchor_vertex_color, vec3 anchor_world_
 	v_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 
 // Alpha scissor + ordered dither + anchor clip. Call from fragment() with the
-// surface's final alpha (texture alpha * tint alpha).
-#define ANCHOR_CLIP(alpha) \
+// surface's final alpha (texture alpha * tint alpha). Shaders whose textures
+// are cutout masks use ANCHOR_CLIP_AT with their own minimum threshold.
+#define ANCHOR_CLIP(alpha) ANCHOR_CLIP_AT(alpha, 0.0)
+
+// As ANCHOR_CLIP, with a shader-authored minimum scissor threshold: the
+// material's `alpha_scissor` uniform can raise it but never lower it. Without
+// one, a cutout card that calls `ANCHOR_CLIP(tex.a * tint.a)` while the uniform
+// default is 0.0 never discards and renders as an opaque quad.
+#define ANCHOR_CLIP_AT(alpha, floor_alpha) \
 	vec2 anchor_frag = floor(FRAGCOORD.xy); \
-	if (alpha_scissor > 0.0 && (alpha) < alpha_scissor) { discard; } \
+	float anchor_floor = max(alpha_scissor, (floor_alpha)); \
+	if (anchor_floor > 0.0 && (alpha) < anchor_floor) { discard; } \
 	if (dither_alpha && use_dither != 0 && (alpha) < anchor_bayer(anchor_frag, float(anchor_size))) { discard; } \
 	if (!pixelizer_lowres_mode) { \
 		bool anchor_on_edge = anchor_frag.x < 1.0 || anchor_frag.y < 1.0 \

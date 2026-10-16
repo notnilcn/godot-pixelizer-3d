@@ -231,6 +231,21 @@ static func preview_diff(source_code: String, generated_code: String) -> String:
 	return "\n".join(lines)
 
 
+## Where the generated bridge shader for `source_path` lives under `output_dir`.
+## Res-relative paths keep their tree (`res://a/b.gdshader` ->
+## `<output_dir>/a/b.gdshader`) so generated output mirrors the source layout;
+## absolute paths have the drive/root separator stripped. Shared by the dock and
+## `tests/bridge/generate_bridges.gd` so the two writers cannot drift.
+static func output_path_for(output_dir: String, source_path: String) -> String:
+	var base := output_dir.trim_suffix("/")
+	var relative := source_path
+	if relative.begins_with("res://"):
+		relative = relative.trim_prefix("res://")
+	else:
+		relative = relative.replace(":", "").trim_prefix("/")
+	return base + "/" + relative
+
+
 ## True when the source already carries the pixelizer hooks (so it is a source,
 ## not a bridge target).
 static func is_opted_in(code: String) -> bool:

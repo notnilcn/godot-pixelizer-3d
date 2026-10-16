@@ -48,12 +48,23 @@ extends CanvasLayer
 ## values only read during setup). Everything else is editable from the tuner.
 const IGNORE_CLASS_PROPERTIES := {
 	&"PixelizerManager3D": [
-		&"enabled", &"editor_preview", &"inherit_sentinel",
+		# `enabled` is deliberately NOT here: its setter unbinds/rebinds the
+		# camera, so the tuner toggle is a real (and useful) plain baseline.
+		&"editor_preview", &"inherit_sentinel",
 		&"metadata_layer", &"sync_process_priority",
 		&"object_profiles", &"bridge_manifests",
+		# Read during bind()/refresh only; already-applied states never re-run
+		# the manifest lookup.
+		&"auto_bridge_custom_shaders",
 	],
 	&"PixelizerApplier3D": [&"ignore_group"],
 	&"PixelizerObjectProfile": [&"target_path"],
+	# Resolution model only: read via the LOW_RES / manage_camera_size path,
+	# never by the anchor lattice (screen-space). See AGENTS.md.
+	&"PixelizerSettings": [&"texel_density", &"view_zoom"],
+	# Mesh built in `_ready`; no live consumer.
+	&"PixelizerWater3D": [&"size", &"subdivisions"],
+	&"PixelizerSkyClouds3D": [&"plane_size"],
 }
 
 const SELECT_HINT := "Press \"Select Object\", then click a mesh in the viewport."
@@ -314,6 +325,14 @@ func _rebuild_manager_panel() -> void:
 		return
 	for group in _collect_groups(manager):
 		_add_section(_manager_sections, _section_title(group), manager, group["props"], not sections_start_folded, _bindings)
+	# The per-scene look lives in `PixelizerSettings` (and is what can be swapped
+	# per camera); its groups get their own "Look" panel rows.
+	var look := manager.get_settings()
+	for group in _collect_groups(look):
+		var look_title := "Look — %s (%d)" % [
+			String(group["name"]) if not String(group["name"]).is_empty() else "General",
+			group["props"].size()]
+		_add_section(_manager_sections, look_title, look, group["props"], not sections_start_folded, _bindings)
 	for effect in _collect_effect_nodes():
 		for group in _collect_groups(effect):
 			var title := "%s (%d)" % [effect.name, group["props"].size()]
@@ -383,13 +402,28 @@ func _pick_at(screen_position: Vector2) -> void:
 	var origin := camera.project_ray_origin(screen_position)
 	var direction := camera.project_ray_normal(screen_position)
 	var physics_pick := _pick_physics(camera, origin, direction)
-	if physics_pick != null and not _is_unselectable(physics_pick):
-		select_node(physics_pick)
-		return
+	var mesh_pick := _pick_mesh(origin, direction)
+	# Physics gives an exact hit position and resolves bodies to their mesh; the
+	# mesh ray test sees geometry a collider may not cover. Prefer whichever
+	# surface is nearer (a tie goes to physics, which is exact).
+	var physics_distance := INF
+	if not physics_pick.is_empty() and not _is_unselectable(physics_pick["node"]):
+		physics_distance = float(physics_pick["distance"])
+	var mesh_distance := INF
+	if not mesh_pick.is_empty():
+		mesh_distance = float(mesh_pick["distance"])
+	if physics_distance < INF and physics_distance <= mesh_distance:
+		select_node(physics_pick["node"])
+	elif mesh_distance < INF:
+		select_node(mesh_pick["node"])
+
+
+## Nearest visible supported mesh along the ray via an AABB pre-pass plus exact
+## tests on the nearest `MAX_TRIANGLE_CANDIDATES` boxes. Returns `{node,
+## distance}` or an empty dictionary.
+func _pick_mesh(origin: Vector3, direction: Vector3) -> Dictionary:
 	var candidates: Array = []
 	_collect_geometry(get_tree().root, candidates)
-	# AABB pre-pass: sort by entry distance, then resolve the nearest few to
-	# real mesh triangles (a big terrain AABB otherwise swallows every click).
 	var hits: Array = []
 	for candidate in candidates:
 		if candidate == _selection_marker:
@@ -406,6 +440,8 @@ func _pick_at(screen_position: Vector2) -> void:
 	var best_distance := INF
 	var tested := 0
 	for hit in hits:
+		# An AABB entry distance is a lower bound on that candidate's triangle
+		# hit, so `best_distance <= hit["t"]` cannot skip a nearer mesh.
 		if best_distance <= float(hit["t"]) or tested >= MAX_TRIANGLE_CANDIDATES:
 			break
 		if _is_unselectable(hit["node"]):
@@ -415,8 +451,9 @@ func _pick_at(screen_position: Vector2) -> void:
 		if distance >= 0.0 and distance < best_distance:
 			best_distance = distance
 			best = hit["node"]
-	if best != null:
-		select_node(best)
+	if best == null:
+		return {}
+	return { "node": best, "distance": best_distance }
 
 
 ## True for nodes the picker must never select: every PixelizerApplier3D, the
@@ -449,31 +486,32 @@ func _script_inherits_class(node: Node, class_name_string: String) -> bool:
 
 
 ## Physics bodies give the exact click position; resolve them to the geometry
-## they drive. Collision-only bodies (no visible geometry) return null so the
-## mesh ray test decides: the picker never targets bodies, appliers or other
-## non-geometry parents.
-func _pick_physics(camera: Camera3D, origin: Vector3, direction: Vector3) -> GeometryInstance3D:
+## they drive. Collision-only bodies (no visible geometry) return an empty
+## dictionary so the mesh ray test decides: the picker never targets bodies,
+## appliers or other non-geometry parents.
+func _pick_physics(camera: Camera3D, origin: Vector3, direction: Vector3) -> Dictionary:
 	var world := camera.get_world_3d()
 	if world == null:
-		return null
+		return {}
 	var query := PhysicsRayQueryParameters3D.create(origin, origin + direction * 10000.0)
 	var hit := world.direct_space_state.intersect_ray(query)
 	if hit.is_empty():
-		return null
+		return {}
 	var collider = hit.get("collider")
 	if not (collider is Node3D):
-		return null
+		return {}
+	var distance := origin.distance_to(hit["position"])
 	if PixelizerGeometryState.is_supported_node(collider):
-		return collider
+		return { "node": collider, "distance": distance }
 	var geometry := _find_geometry_descendant(collider)
 	if geometry != null:
-		return geometry
+		return { "node": geometry, "distance": distance }
 	var parent := (collider as Node3D).get_parent()
 	while parent != null:
 		if PixelizerGeometryState.is_supported_node(parent):
-			return parent
+			return { "node": parent, "distance": distance }
 		parent = parent.get_parent()
-	return null
+	return {}
 
 
 func _find_geometry_descendant(node: Node) -> GeometryInstance3D:
@@ -488,7 +526,10 @@ func _find_geometry_descendant(node: Node) -> GeometryInstance3D:
 
 ## Exact distance when the node is a plain MeshInstance3D (ray/triangle), the
 ## AABB fallback for MultiMesh/particle nodes (instanced geometry has no single
-## face list to test against).
+## face list to test against). The triangle test uses `Mesh.get_faces()`, which
+## is the rest pose: a heavily posed skinned mesh is picked from its rest pose
+## (the skeleton-aware `GeometryInstance3D.get_aabb()` in the pre-pass at least
+## narrows the candidates).
 func _mesh_hit_distance(origin: Vector3, direction: Vector3, node: Node3D) -> float:
 	if node is MeshInstance3D:
 		var mesh := (node as MeshInstance3D).mesh
@@ -497,7 +538,7 @@ func _mesh_hit_distance(origin: Vector3, direction: Vector3, node: Node3D) -> fl
 		var faces := mesh.get_faces()
 		if faces.size() >= 9:
 			return _ray_faces_distance(origin, direction, node.global_transform, faces)
-		return _ray_aabb_distance(origin, direction, node.global_transform, mesh.get_aabb())
+		return _ray_aabb_distance(origin, direction, node.global_transform, (node as MeshInstance3D).get_aabb())
 	var aabb_value: Variant = _candidate_aabb(node)
 	if aabb_value == null:
 		return -1.0
@@ -550,9 +591,6 @@ func _collect_geometry(node: Node, out: Array) -> void:
 
 
 func _candidate_aabb(node: Node) -> Variant:
-	if node is MeshInstance3D:
-		var mesh := (node as MeshInstance3D).mesh
-		return mesh.get_aabb() if mesh != null else null
 	if node is MultiMeshInstance3D:
 		var multimesh := (node as MultiMeshInstance3D).multimesh
 		return multimesh.get_aabb() if multimesh != null else null
@@ -560,6 +598,11 @@ func _candidate_aabb(node: Node) -> Variant:
 		return (node as GPUParticles3D).visibility_aabb
 	if node is CPUParticles3D:
 		return (node as CPUParticles3D).visibility_aabb
+	if node is GeometryInstance3D:
+		# Local-space AABB. MeshInstance3D resolves this through its skeleton
+		# path, so a posed skinned mesh is not picked from its rest-pose box
+		# (unlike `Mesh.get_aabb()`).
+		return (node as GeometryInstance3D).get_aabb()
 	return null
 
 
@@ -614,22 +657,27 @@ func _rebuild_object_panel() -> void:
 		return
 	_object_title.text = _selected.name
 	_object_subtitle.text = str(_selected.get_path())
+	# The node's own script exports first: edits here affect only this node.
+	# (The manager/applier/overlay have dedicated panels elsewhere.)
 	var klass := _script_class_name(_selected)
-	if klass.begins_with("Pixelizer") \
-			and klass != "PixelizerApplier3D" \
-			and klass != "PixelizerManager3D" \
-			and klass != "PixelizerDiagnosticsOverlay":
-		_add_object_groups(_selected, klass)
-	if manager != null and is_instance_valid(manager):
+	if klass != "PixelizerApplier3D" and klass != "PixelizerManager3D" and klass != "PixelizerDiagnosticsOverlay":
+		_add_object_groups(_selected, "This object — %s" % _selected.name)
+	# Per-object override resource, plus the create action for supported
+	# geometry only (a profile on anything else has nothing to configure).
+	var supported := PixelizerGeometryState.is_supported_node(_selected)
+	if manager != null and is_instance_valid(manager) and supported:
 		var profile := manager.get_object_profile(_selected)
 		if profile != null:
-			_add_object_groups(profile, "Object Profile")
+			_add_object_groups(profile, "Object profile (this object only)")
 			_add_action_button("Remove Object Profile", _remove_object_profile.bind(profile, _selected))
 		else:
 			_add_action_button("Create Object Profile", _create_object_profile.bind(_selected))
+	# The parent applier's values are subtree-wide inherit defaults.
 	var applier := _find_ancestor_applier(_selected)
 	if applier != null:
-		_add_object_groups(applier, "Parent Applier — %s" % applier.name)
+		var bound := applier.get_bound_state_count()
+		_add_object_groups(applier, "Parent applier — %s (shared by %d mesh%s)" % [
+			applier.name, bound, "" if bound == 1 else "es"])
 	if _object_sections.get_child_count() == 0:
 		var label := Label.new()
 		label.text = "No pixelizer configuration on this node."

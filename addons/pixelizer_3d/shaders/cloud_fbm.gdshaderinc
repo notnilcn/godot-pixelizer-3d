@@ -60,7 +60,10 @@ float cloud_noise_at(vec3 cloud_world_position) {
 	// gap erosion keep cloud cores from reading as flat blobs.
 	if (cloud_detail_strength > 0.0) {
 		float detail = texture(cloud_noise, uv * 2.17 + vec2(0.37, 0.11)).r;
-		cloud_n = mix(cloud_n, cloud_n * 0.65 + detail * 0.35, cloud_detail_strength);
+		// Second octave at `cloud_octave_drop` amplitude (classic fBm
+		// persistence; 0.5 reproduces the former fixed 2/3 + 1/3 blend).
+		float fbm = (cloud_n + detail * cloud_octave_drop) / (1.0 + cloud_octave_drop);
+		cloud_n = mix(cloud_n, fbm, cloud_detail_strength);
 	}
 	return cloud_n;
 }

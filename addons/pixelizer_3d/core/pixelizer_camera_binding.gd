@@ -94,7 +94,7 @@ func bind(cam: Camera3D) -> void:
 	_saved_h_offset = cam.h_offset
 	_saved_v_offset = cam.v_offset
 	_saved_size = cam.size
-	_saved_size_managed = manager.manage_camera_size
+	_saved_size_managed = manager.get_settings().manage_camera_size
 	if manager.mode == PixelizerManager3D.Mode.ANCHOR:
 		cam.set_cull_mask_value(manager.metadata_layer, false)
 		cam.compositor = compositor
@@ -121,8 +121,15 @@ func unbind(cam: Camera3D) -> void:
 
 # ── Camera snap (h_offset/v_offset only — never transforms) ─────────────────
 
-## World units covered by one screen texel (respects keep_aspect).
+## World units covered by one screen texel. In LOW_RES mode that is the
+## manager-owned mirror camera inside the display SubViewport (the user camera
+## only carries the snap offsets and is mirrored every frame); measuring it
+## against the window would be off by window_height / render_resolution.y.
 func get_texel_world_size() -> float:
+	if manager.mode == PixelizerManager3D.Mode.LOW_RES:
+		var lowres := manager.get_lowres_view()
+		if lowres != null and lowres.is_active():
+			return lowres.get_texel_world_size()
 	var cam := active_camera
 	if cam == null or not is_instance_valid(cam):
 		return 0.0
@@ -137,23 +144,26 @@ func get_texel_world_size() -> float:
 ## Effective view width (horizontal) for the configured render resolution,
 ## texel density and zoom.
 func get_view_width() -> float:
-	return float(manager.render_resolution.x) / maxf(manager.texel_density, 0.0001) * manager.view_zoom
+	var settings := manager.get_settings()
+	return float(settings.render_resolution.x) / maxf(settings.texel_density, 0.0001) * settings.view_zoom
 
 
 ## Configured view width before zoom.
 func get_base_view_width() -> float:
-	return float(manager.render_resolution.x) / maxf(manager.texel_density, 0.0001)
+	var settings := manager.get_settings()
+	return float(settings.render_resolution.x) / maxf(settings.texel_density, 0.0001)
 
 
 ## Write `camera.size` for the configured resolution, density and zoom.
 func apply_managed_size(camera: Camera3D) -> void:
 	if camera == null or not is_instance_valid(camera):
 		return
-	var units := 1.0 / maxf(manager.texel_density, 0.0001)
+	var settings := manager.get_settings()
+	var units := 1.0 / maxf(settings.texel_density, 0.0001)
 	if camera.keep_aspect == Camera3D.KEEP_WIDTH:
-		camera.size = float(manager.render_resolution.x) * units * manager.view_zoom
+		camera.size = float(settings.render_resolution.x) * units * settings.view_zoom
 	else:
-		camera.size = float(manager.render_resolution.y) * units * manager.view_zoom
+		camera.size = float(settings.render_resolution.y) * units * settings.view_zoom
 
 
 ## Snap the camera to the texel lattice via h_offset/v_offset (never transforms).
@@ -162,7 +172,7 @@ func apply_managed_size(camera: Camera3D) -> void:
 ## texel; the residual sub-texel phase is what `h_offset`/`v_offset` cancel.
 func snap() -> void:
 	var cam := active_camera
-	if not manager.snap_camera or cam == null or not is_instance_valid(cam):
+	if not manager.get_settings().snap_camera or cam == null or not is_instance_valid(cam):
 		_zero_snap(cam)
 		return
 	if cam.projection != Camera3D.PROJECTION_ORTHOGONAL:
@@ -171,7 +181,7 @@ func snap() -> void:
 			push_error("Pixelizer3D: camera snap only supports orthographic cameras; the macro-pixel lattice will crawl as the camera moves. Set `snap_camera = false` to silence this, or use an orthographic Camera3D.")
 		_zero_snap(cam)
 		return
-	if manager.lock_camera:
+	if manager.get_settings().lock_camera:
 		_zero_snap(cam)
 		return
 	var texel := get_texel_world_size()
@@ -188,7 +198,12 @@ func snap() -> void:
 	var residual := anchor_texel - snapped
 	cam.h_offset = residual.x * texel
 	cam.v_offset = residual.y * texel
-	subtexel_remainder = -residual
+	# The camera shift moves the rendered content by -residual in texel space;
+	# the smooth-scroll consumer counter-shifts by (+x, -y) (x in columns, y
+	# negated because screen rows increase downward while view-space y increases
+	# upward). A bare `-residual` gets y right by accident but doubles the x
+	# error.
+	subtexel_remainder = Vector2(residual.x, -residual.y)
 
 
 ## Clear the snap offsets when snapping is inactive, so a camera does not keep
@@ -283,3 +298,4 @@ func update_metadata_texture() -> void:
 
 func get_metadata_texture_rid() -> RID:
 	return _metadata_texture_rd
+

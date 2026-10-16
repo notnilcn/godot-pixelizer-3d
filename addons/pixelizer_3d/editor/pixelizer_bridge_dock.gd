@@ -402,13 +402,8 @@ func _clean_generated() -> void:
 
 
 func _output_path_for(source_path: String) -> String:
-	var base := manifest.output_dir.trim_suffix("/")
-	var relative := source_path
-	if relative.begins_with("res://"):
-		relative = relative.trim_prefix("res://")
-	else:
-		relative = relative.replace(":", "").trim_prefix("/")
-	return base + "/" + relative
+	# Shared with the headless generator (see tests/bridge/generate_bridges.gd).
+	return PixelizerShaderBridge.output_path_for(manifest.output_dir, source_path)
 
 
 func _read_text(path: String) -> String:

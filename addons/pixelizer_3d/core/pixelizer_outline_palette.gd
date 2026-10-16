@@ -10,6 +10,15 @@ extends Resource
 ## (the scene is left untouched); 1 replaces it. This keeps colour and blend
 ## weight in separate channels instead of overloading alpha as a boolean
 ## multiply flag.
+##
+## `multiply_colors` switches the apply pass to a modulation instead:
+## `scene_color *= palette.rgb * 2`, so rows authored around `(0.5, 0.5, 0.5)`
+## are invisible, darker rows darken and brighter rows brighten (the
+## ProPixelizer `_EdgeHighlightColor` convention). The apply pass linearises
+## the authored (sRGB) row colour in both modes.
+##
+## Row 255 is the focus subject's row: `PixelizerManager3D.set_outline_color(255,
+## c)` colours focused geometry (whose metadata tag is forced to 255).
 
 const ROW_COUNT := 256
 const DEFAULT_COLOR := Color(0.04, 0.05, 0.09, 1.0)
@@ -19,6 +28,8 @@ const DEFAULT_COLOR := Color(0.04, 0.05, 0.09, 1.0)
 ## Per-row outline opacity in [0, 1]; 0 hides that row.
 @export var silhouette_alpha: PackedFloat32Array
 @export var inner_alpha: PackedFloat32Array
+## Modulate the scene colour (`rgb * 2`) instead of replacing it at `alpha`.
+@export var multiply_colors := false
 
 
 func _init() -> void:

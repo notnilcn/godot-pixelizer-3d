@@ -67,7 +67,7 @@ func _exit_tree() -> void:
 
 
 func _process(_delta: float) -> void:
-	if Engine.is_editor_hint() and not (manager != null and is_instance_valid(manager) and manager.editor_preview):
+	if not PixelizerEffect3D.is_live(self):
 		return
 	if _effect == null or not _manager_valid():
 		return
@@ -80,13 +80,11 @@ func _process(_delta: float) -> void:
 func _register() -> void:
 	if not enabled:
 		return
-	if Engine.is_editor_hint() and not (manager != null and is_instance_valid(manager) and manager.editor_preview):
+	if not PixelizerEffect3D.is_live(self):
 		return
+	manager = PixelizerEffect3D.resolve(self)
 	if not _manager_valid():
-		manager = PixelizerManager3D.resolve_manager_explicit(self)
-	if not _manager_valid():
-		if not Engine.is_editor_hint():
-			push_error("Pixelizer3D: PixelizerGodRays3D at '%s' found no PixelizerManager3D; the ray pass is inert." % get_path())
+		PixelizerEffect3D.report_missing(self, "the ray pass is inert.")
 		return
 	if _effect == null:
 		_effect = PixelizerGodRayEffect.new()
@@ -112,6 +110,4 @@ func _get_configuration_warnings() -> PackedStringArray:
 	var warnings := PackedStringArray()
 	if not enabled:
 		return warnings
-	if PixelizerManager3D.resolve_manager_explicit(self) == null:
-		warnings.append("No PixelizerManager3D resolved; the god-ray pass cannot be inserted.")
-	return warnings
+	return PixelizerEffect3D.warnings(self, "the god-ray pass cannot be inserted.")

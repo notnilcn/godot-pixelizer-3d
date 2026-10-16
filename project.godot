@@ -79,3 +79,30 @@ debug={
 screenshot_max_count=50
 screenshot_max_age_hours=24
 _frozen_on_start=false
+
+[shader_globals]
+
+pixelizer_meta_bit={
+"type": "uint",
+"value": 0
+}
+pixelizer_lowres_mode={
+"type": "bool",
+"value": false
+}
+pixelizer_palette_lut={
+"type": "sampler2D",
+"value": null
+}
+pixelizer_palette_grading_enabled={
+"type": "bool",
+"value": false
+}
+pixelizer_palette_dither_enabled={
+"type": "bool",
+"value": true
+}
+pixelizer_screen_size={
+"type": "vec2",
+"value": Vector2(960, 540)
+}

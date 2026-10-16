@@ -22,9 +22,16 @@ const SHADER_PATH := "res://addons/pixelizer_3d/shaders/sky_clouds.gdshader"
 @export var manager: PixelizerManager3D
 
 @export_group("Cloud Field")
+## Restrict this provider to one camera: it is the active cloud field only while
+## that camera is the manager's active camera. Leave unset for the scene's
+## default provider (unscoped providers are fallbacks in registration order).
+## Two cameras visible **at once** still share one field (material uniforms are
+## per manager).
+@export var cloud_camera_scope: Camera3D
 ## Master cloud toggle (the shader contract's `clouds_enabled`). Off means no
-## shadows and no deck even while the node is enabled.
-@export var clouds_enabled := false
+## shadows and no deck even while the node is enabled. Live: recomputes the
+## deck visibility immediately.
+@export var clouds_enabled := false: set = _set_clouds_enabled
 ## Seamless noise texture; generated (Perlin 0.02, seed 7) when unset.
 @export var cloud_noise: Texture2D
 ## Height of the imaginary cloud plane the shadows project from.
@@ -45,8 +52,9 @@ const SHADER_PATH := "res://addons/pixelizer_3d/shaders/sky_clouds.gdshader"
 @export_group("Deck")
 ## Node toggle. Disabled unregisters this node (neutral params, no shadows).
 @export var enabled := true: set = _set_enabled
-## Visible cloud sheet. False = shadows/rays only.
-@export var deck_enabled := true
+## Visible cloud sheet. False = shadows/rays only. Live: recomputes the deck
+## visibility immediately.
+@export var deck_enabled := true: set = _set_deck_enabled
 ## Deck extent; big is cheap (one quad). Keep it wider than the ortho view.
 @export var plane_size := 4096.0
 @export var cloud_color := Color(1.0, 1.0, 1.0, 1.0)
@@ -70,6 +78,9 @@ var _last_bound_on := -1e30
 
 func _ready() -> void:
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# Not pixelized geometry: an applier subtree scan must skip the deck instead
+	# of retrying a bind that can only warn (see the water effect).
+	add_to_group("pixelizer_ignore")
 	top_level = true
 	var plane := PlaneMesh.new()
 	plane.size = Vector2(plane_size, plane_size)
@@ -87,14 +98,12 @@ func _ready() -> void:
 func _register() -> void:
 	if _material == null:
 		return
-	if manager == null:
-		manager = PixelizerManager3D.resolve_manager_explicit(self)
-	if not _manager_valid():
-		if not Engine.is_editor_hint():
-			push_error("Pixelizer3D: PixelizerSkyClouds3D at '%s' found no PixelizerManager3D; the cloud deck is inert." % get_path())
-		visible = false
+	if not PixelizerEffect3D.is_live(self):
 		return
-	if Engine.is_editor_hint() and not manager.editor_preview:
+	manager = PixelizerEffect3D.resolve(self)
+	if not _manager_valid():
+		PixelizerEffect3D.report_missing(self, "the cloud deck and cloud shadows are inert.")
+		visible = false
 		return
 	if enabled:
 		manager.register_cloud_provider(self)
@@ -110,7 +119,7 @@ func _exit_tree() -> void:
 
 
 func _process(_delta: float) -> void:
-	if Engine.is_editor_hint() and not (manager != null and is_instance_valid(manager) and manager.editor_preview):
+	if not PixelizerEffect3D.is_live(self):
 		return
 	if not _manager_valid() or _material == null:
 		return
@@ -220,11 +229,23 @@ func _manager_valid() -> bool:
 	return manager != null and is_instance_valid(manager)
 
 
+## `clouds_enabled` / `deck_enabled` only fed `visible` through
+## `_update_transform()`, which `_process` calls solely while `follow_camera` is
+## on — a tuner change could do nothing forever. Recompute on write.
+func _set_clouds_enabled(value: bool) -> void:
+	clouds_enabled = value
+	if is_inside_tree():
+		_update_transform()
+
+
+func _set_deck_enabled(value: bool) -> void:
+	deck_enabled = value
+	if is_inside_tree():
+		_update_transform()
+
+
 func _get_configuration_warnings() -> PackedStringArray:
-	var warnings := PackedStringArray()
-	if PixelizerManager3D.resolve_manager_explicit(self) == null:
-		warnings.append("No PixelizerManager3D resolved; the cloud deck and cloud shadows are inert.")
-	return warnings
+	return PixelizerEffect3D.warnings(self, "the cloud deck and cloud shadows are inert.")
 
 
 func _update_transform() -> void:

@@ -31,7 +31,7 @@ layout(set = 0, binding = 3, std140) uniform Params {
 	vec4 sun_dir;         // xyz = world direction the light travels (downward)
 	vec4 cloud_params;    // x = noise scale, y = threshold, z = bands, w = plane height
 	vec4 cloud_params2;   // x = tightness, y = softness, z = band levels, w = banding enabled
-	vec4 cloud_params3;   // x = gap erosion, y = detail strength, z = time, w = unused
+	vec4 cloud_params3;   // x = gap erosion, y = detail strength, z = time, w = octave drop
 	vec4 cloud_wind;      // xy = wind
 	vec4 ray_params;      // x = max distance, y = intensity, z = decay, w = quantize bands
 	vec4 ray_params2;     // x = dust strength, y = steps, z = near fade start, w = near fade range
@@ -58,7 +58,9 @@ float cloud_gap(vec2 plane_pos) {
 	float n = textureLod(cloud_noise, uv, 0.0).r;
 	if (cloud_params3.y > 0.0) {
 		float detail = textureLod(cloud_noise, uv * 2.17 + vec2(0.37, 0.11), 0.0).r;
-		n = mix(n, n * 0.65 + detail * 0.35, cloud_params3.y);
+		// Second octave at `cloud_octave_drop` amplitude (mirrors
+		// cloud_fbm.gdshaderinc's cloud_noise_at).
+		n = mix(n, (n + detail * cloud_params3.w) / (1.0 + cloud_params3.w), cloud_params3.y);
 	}
 	n += cloud_params3.x; // gap erosion, applied before coverage like cloud_shadow()
 	float coverage = smoothstep(cloud_params.y - cloud_params2.y, cloud_params.y, n);
