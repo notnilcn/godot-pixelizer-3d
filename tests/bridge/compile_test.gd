@@ -8,9 +8,9 @@ extends Node3D
 ##   Godot-stable_mono_win64_console.exe --path . res://tests/bridge/compile_test.tscn
 
 const SHADERS := [
-	"res://tests/bridge/generated/mst_terrain.gdshader",
-	"res://tests/bridge/generated/mst_terrain_baked.gdshader",
-	"res://tests/bridge/generated/mst_grass.gdshader",
+	"res://tests/bridge/generated/addons/MarchingSquaresTerrain/resources/shaders/mst_terrain.gdshader",
+	"res://tests/bridge/generated/addons/MarchingSquaresTerrain/resources/shaders/mst_terrain_baked.gdshader",
+	"res://tests/bridge/generated/addons/MarchingSquaresTerrain/resources/shaders/mst_grass.gdshader",
 ]
 
 var _frames := 0

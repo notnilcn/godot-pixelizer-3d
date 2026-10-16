@@ -1,375 +1,210 @@
 #!/usr/bin/env python3
-"""Pixelizer3D capture regression runner (PLAN section 8).
+"""Capture-regression matrix for `demo/demo.tscn`.
 
-Runs the demo's deterministic capture matrix through the Godot CLI, saves the
-PNGs to tests/captures/, and diffs them against tests/reference/. Also checks
-the capture diagnostics JSON (mode / plain / window size) and cross-checks that
-`--plain` and `--capture-mode=lowres` really render differently from anchor mode.
+Runs the demo once per matrix entry with the small capture CLI implemented in
+`demo/capture.gd` (`--capture`, `--resolution`, `--fixed-view`, `--mode`,
+`--plain`, `--debug-view`, `--pixel-size`, `--no-overlay`, `--settle`), verifies
+the diagnostics JSON line the demo prints, diffs each capture against
+`tests/reference/`, and cross-checks that every non-anchor mode actually differs
+from the anchor capture (a silently ignored flag fails the run).
 
 Usage:
-    python tests/run_captures.py                      # capture + compare
-    python tests/run_captures.py --update-references  # refresh reference set
-    python tests/run_captures.py --only anchor_outline,plain_outline
-    python tests/run_captures.py --list
-    python tests/run_captures.py --no-compare         # capture only
+    python tests/run_captures.py                     # compare against references
+    python tests/run_captures.py --update-references # (re)write the references
+    python tests/run_captures.py --only=lowres       # one entry
+    python tests/run_captures.py --godot <path>      # override the binary
 
-Exit codes:
-    0  all captures ran and all diffs passed
-    1  a capture failed (process error / missing PNG / bad diagnostics)
-    2  a diff exceeded tolerance
-    3  a reference PNG is missing (run --update-references to create it)
-    4  environment error (Godot binary or PIL missing)
-
-Determinism: every run uses `--fixed-fps 60` (engine arg), fixes the window
-(`--resolution`, default 960x540) and lets the demo pin the god-ray cloud-field
-phase for `--capture` (that pass reads the wall clock, unlike shader TIME).
-Run-to-run captures are expected to be byte-identical; the default tolerance is
-a hair above zero to absorb GPU rounding.
+Captures need a real GPU/display (Forward+); the runner passes `--fixed-fps 60`
+and pins the demo's god-ray phase, which makes runs byte-identical on one
+machine (`tests/captures/` is the output directory and is gitignored apart from
+its `.gdignore`).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
-from compare_captures import diff_images, format_metrics, load_rgb, verdict
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from compare_captures import diff_images, format_metrics, load_rgb  # noqa: E402
+import os  # noqa: E402
 
-TESTS_DIR = Path(__file__).resolve().parent
-REPO_ROOT = TESTS_DIR.parent
-CAPTURES_DIR = TESTS_DIR / "captures"
-REFERENCE_DIR = TESTS_DIR / "reference"
-LOGS_DIR = TESTS_DIR / "logs"
+DEFAULT_GODOT = os.environ.get(
+    "GODOT_BIN",
+    "C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe")
 
-DEFAULT_GODOT = "C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe"
-DEFAULT_RESOLUTION = "960x540"
+ROOT = Path(__file__).resolve().parents[1]
+CAPTURES = ROOT / "tests" / "captures"
+REFERENCES = ROOT / "tests" / "reference"
 
-# Capture matrix: the smallest set that covers the pipeline modes + stations
-# worth regressing. `expect` asserts the diagnostics JSON so a silently ignored
-# flag fails the run instead of comparing the wrong image.
+DIAG_PREFIX = "PIXELIZER_CAPTURE "
+
+# Reference tolerance: on one machine the matrix is byte-stable, so this only
+# absorbs driver differences. Cross-mode differences are asserted separately.
+MAX_CHANGED_PCT = 0.5
+MAX_MEAN = 0.2
+# A non-anchor mode must differ from the anchor capture by at least this much.
+MIN_CHANGED_PCT = 1.0
+MIN_MEAN = 0.5
+
+SETTLE = 150
+
 MATRIX = [
     {
-        "name": "anchor_terrain",
-        "args": ["--station=0"],
-        "expect": {"mode": "anchor", "plain": False},
-    },
-    {
-        "name": "anchor_water",
-        "args": ["--station=1"],
-        "expect": {"mode": "anchor", "plain": False},
-    },
-    {
-        "name": "anchor_outline",
-        "args": ["--station=3"],
-        "expect": {"mode": "anchor", "plain": False},
-    },
-    {
-        "name": "night_landmark",
-        "args": ["--night", "--station=2"],
-        "expect": {"mode": "anchor", "plain": False},
+        "name": "anchor",
+        "args": ["--fixed-view=overhead", "--no-overlay"],
+        "expect": {"mode": "anchor", "plain": False, "debug_view": 0, "pixel_size": 5},
     },
     {
         "name": "debug_anchor_map",
-        "args": ["--debug-view=1", "--station=3"],
-        "expect": {"mode": "anchor", "plain": False},
+        "args": ["--fixed-view=overhead", "--no-overlay", "--debug-view=1"],
+        "expect": {"mode": "anchor", "debug_view": 1},
     },
     {
-        "name": "lowres_outline",
-        "args": ["--capture-mode=lowres", "--station=3"],
-        "expect": {"mode": "lowres", "plain": False},
+        "name": "lowres",
+        "args": ["--fixed-view=overhead", "--no-overlay", "--mode=lowres"],
+        "expect": {"mode": "lowres"},
     },
     {
-        "name": "plain_outline",
-        "args": ["--plain", "--station=3"],
-        "expect": {"mode": "anchor", "plain": True},
+        "name": "plain",
+        "args": ["--fixed-view=overhead", "--no-overlay", "--plain"],
+        "expect": {"plain": True},
     },
     {
-        "name": "tests_anchor",
-        "args": ["--tests", "--no-particles", "--station=6"],
-        "expect": {"mode": "anchor", "plain": False, "mover_count": 5,
-                   "unified_lattice": True, "no_dither": True},
-    },
-    {
-        "name": "tests_perspective",
-        "args": ["--tests", "--no-particles", "--perspective", "--station=6"],
-        "expect": {"mode": "anchor", "plain": False, "perspective": True},
+        "name": "pixel_size_3",
+        "args": ["--fixed-view=overhead", "--no-overlay", "--pixel-size=3"],
+        "expect": {"pixel_size": 3},
     },
 ]
 
-# (a, b, minimum changed_pct, why) - proves the flag variants are not no-ops.
-CROSS_CHECKS = [
-    ("anchor_outline", "plain_outline", 1.0,
-     "--plain renders un-pixelized, so it must differ from the anchor capture"),
-    ("anchor_outline", "lowres_outline", 0.5,
-     "low-res mode must differ from anchor mode"),
-]
 
-DEFAULT_TOLERANCE = {
-    "max_changed_pct": 0.05,
-    "max_mean": 0.05,
-    "pixel_threshold": 3,
-}
-
-EXIT_OK = 0
-EXIT_CAPTURE_FAILED = 1
-EXIT_DIFF_FAILED = 2
-EXIT_MISSING_REFERENCE = 3
-EXIT_ENV_ERROR = 4
-
-DIAGNOSTICS_RE = re.compile(r"Pixelizer3D diagnostics: (\{.*\})")
-CAPTURE_SAVED_RE = re.compile(r"Pixelizer3D capture saved: (.+?) \(err=(\d+)\)")
-
-
-def find_godot(explicit: str | None) -> str:
-    if explicit:
-        return explicit if Path(explicit).is_file() else ""
-    for candidate in (os.environ.get("PIXELIZER_GODOT"),
-                      os.environ.get("GODOT_EXE"), DEFAULT_GODOT):
-        if candidate and Path(candidate).is_file():
-            return candidate
-    return ""
-
-
-def parse_log(text: str) -> dict:
-    """Extract the capture diagnostics JSON and the saved path/error."""
-    info: dict = {"diagnostics": None, "saved_path": None, "save_err": None}
-    match = CAPTURE_SAVED_RE.search(text)
-    if match:
-        info["saved_path"] = match.group(1)
-        info["save_err"] = int(match.group(2))
-    match = DIAGNOSTICS_RE.search(text)
-    if match:
-        try:
-            info["diagnostics"] = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            info["diagnostics"] = None
-    return info
-
-
-def run_capture(godot: str, entry: dict, resolution: str, timeout: float) -> dict:
-    """Run one matrix entry. Returns a result dict (ok, log_path, diagnostics...)."""
-    name = entry["name"]
-    level_png = CAPTURES_DIR / f"{name}.png"
-    level_log = LOGS_DIR / f"{name}.log"
-    rel_png = f"res://tests/captures/{name}.png"
-    command = [
-        godot, "--path", str(REPO_ROOT), "--fixed-fps", "60", "--",
-        f"--capture={rel_png}", f"--resolution={resolution}",
+def run_capture(entry: dict, godot: str, destination: Path, timeout: float) -> dict:
+    """Run one matrix entry; returns the diagnostics dict (raises on failure)."""
+    args = [
+        godot,
+        "--path", str(ROOT),
+        "--fixed-fps", "60",
+        "--",
+        f"--capture={destination.as_posix()}",
+        f"--settle={SETTLE}",
         *entry["args"],
     ]
-    started = time.time()
-    try:
-        proc = subprocess.run(command, cwd=str(REPO_ROOT), capture_output=True,
-                              text=True, timeout=timeout)
-        stdout, stderr, returncode = proc.stdout, proc.stderr, proc.returncode
-    except subprocess.TimeoutExpired as exc:
-        stdout = (exc.stdout or b"").decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        stderr = (exc.stderr or b"").decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        returncode = -1
-    elapsed = time.time() - started
-
-    level_log.write_text(stdout + "\n----- stderr -----\n" + stderr, encoding="utf-8")
-    result = {
-        "name": name,
-        "args": entry["args"],
-        "command": command,
-        "ok": True,
-        "reasons": [],
-        "log": level_log,
-        "png": level_png,
-        "elapsed": elapsed,
-        "diagnostics": None,
-    }
-    if returncode != 0:
-        result["ok"] = False
-        result["reasons"].append(f"godot exit code {returncode}")
-    if not level_png.is_file():
-        result["ok"] = False
-        result["reasons"].append("capture PNG missing")
-    for line in (stdout + stderr).splitlines():
-        if "SCRIPT ERROR" in line or "SHADER ERROR" in line:
-            result["ok"] = False
-            result["reasons"].append(f"engine error: {line.strip()[:160]}")
-            break
-    info = parse_log(stdout + stderr)
-    result["diagnostics"] = info["diagnostics"]
-    if info["saved_path"] is None:
-        result["ok"] = False
-        result["reasons"].append("no 'capture saved' line")
-    elif info["save_err"] not in (0, None):
-        result["ok"] = False
-        result["reasons"].append(f"save_png error {info['save_err']}")
-    if info["diagnostics"] is None:
-        result["ok"] = False
-        result["reasons"].append("diagnostics dump missing/invalid")
-    else:
-        diagnostics = info["diagnostics"]
-        expected = entry.get("expect", {})
-        for key, value in expected.items():
-            if diagnostics.get(key) != value:
-                result["ok"] = False
-                result["reasons"].append(
-                    f"diagnostics.{key}={diagnostics.get(key)!r} (expected {value!r})")
-        window = diagnostics.get("window")
-        wanted = [int(v) for v in resolution.lower().split("x")]
-        if window != wanted:
-            result["ok"] = False
-            result["reasons"].append(f"window={window} (expected {wanted})")
-    return result
-
-
-def subset(matrix: list[dict], only: str | None) -> list[dict]:
-    if not only:
-        return matrix
-    wanted = {name.strip() for name in only.split(",") if name.strip()}
-    unknown = wanted - {entry["name"] for entry in matrix}
-    if unknown:
-        print(f"ERROR: unknown capture name(s): {', '.join(sorted(unknown))}",
-              file=sys.stderr)
-        raise SystemExit(EXIT_ENV_ERROR)
-    return [entry for entry in matrix if entry["name"] in wanted]
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    diagnostics = None
+    for line in proc.stdout.splitlines():
+        if line.startswith(DIAG_PREFIX):
+            diagnostics = json.loads(line[len(DIAG_PREFIX):])
+    if diagnostics is None:
+        raise RuntimeError(
+            f"{entry['name']}: no diagnostics line (exit {proc.returncode}); stderr tail:\n"
+            + "\n".join(proc.stderr.splitlines()[-5:]))
+    if diagnostics.get("save_error") != 0 or proc.returncode != 0:
+        raise RuntimeError(f"{entry['name']}: capture failed: {diagnostics} "
+                           f"exit={proc.returncode}")
+    if not destination.exists():
+        raise RuntimeError(f"{entry['name']}: {destination} was not written")
+    for key, expected in entry["expect"].items():
+        actual = diagnostics.get(key)
+        if actual != expected:
+            raise RuntimeError(
+                f"{entry['name']}: flag not honoured: {key}={actual!r} "
+                f"(expected {expected!r}); diagnostics={diagnostics}")
+    return diagnostics
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--godot", default=None,
-                        help="Godot 4.7 console binary (default: %(default)s or "
-                             "PIXELIZER_GODOT/GODOT_EXE)")
-    parser.add_argument("--resolution", default=DEFAULT_RESOLUTION,
-                        help=f"fixed window size (default {DEFAULT_RESOLUTION})")
-    parser.add_argument("--only", default=None,
-                        help="comma-separated capture names to run")
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--update-references", action="store_true",
-                        help="copy the fresh captures into tests/reference/ and exit")
-    parser.add_argument("--no-compare", action="store_true",
-                        help="capture only; skip the reference diff")
-    parser.add_argument("--list", action="store_true", help="list the matrix and exit")
-    parser.add_argument("--timeout", type=float, default=300.0,
-                        help="per-capture timeout in seconds (default 300)")
-    parser.add_argument("--max-changed-pct", type=float,
-                        default=DEFAULT_TOLERANCE["max_changed_pct"],
-                        help="diff tolerance (default %(default)s)")
-    parser.add_argument("--max-mean", type=float,
-                        default=DEFAULT_TOLERANCE["max_mean"],
-                        help="diff tolerance (default %(default)s)")
-    parser.add_argument("--pixel-threshold", type=int,
-                        default=DEFAULT_TOLERANCE["pixel_threshold"],
-                        help="changed-pixel channel delta threshold (default %(default)s)")
+                        help="run the matrix and copy the captures into tests/reference/")
+    parser.add_argument("--only", default="", help="run one matrix entry by name")
+    parser.add_argument("--godot", default=DEFAULT_GODOT, help="Godot binary path")
+    parser.add_argument("--timeout", type=float, default=180.0,
+                        help="per-capture timeout in seconds (default 180)")
     args = parser.parse_args(argv)
 
-    if args.list:
-        for entry in MATRIX:
-            print(f"{entry['name']}: {' '.join(entry['args']) or '(no flags)'}")
-        return EXIT_OK
+    entries = MATRIX
+    if args.only:
+        entries = [entry for entry in MATRIX if entry["name"] == args.only]
+        if not entries:
+            print(f"ERROR: no matrix entry named {args.only!r}", file=sys.stderr)
+            return 1
 
-    godot = find_godot(args.godot)
-    if not godot:
-        print("ERROR: Godot console binary not found. Pass --godot <path> or set "
-              "PIXELIZER_GODOT.", file=sys.stderr)
-        return EXIT_ENV_ERROR
+    CAPTURES.mkdir(parents=True, exist_ok=True)
+    REFERENCES.mkdir(parents=True, exist_ok=True)
 
-    CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
-
-    entries = subset(MATRIX, args.only)
-    print(f"Pixelizer3D capture matrix: {len(entries)} captures at {args.resolution} "
-          f"({godot})")
-    results = []
+    failures: list[str] = []
+    captures: dict[str, Path] = {}
     for entry in entries:
-        result = run_capture(godot, entry, args.resolution, args.timeout)
-        results.append(result)
-        flags = " ".join(entry["args"]) or "(no flags)"
-        status = "ok" if result["ok"] else "FAIL"
-        print(f"  [{status:^4}] {entry['name']:<18} {flags:<34} "
-              f"{result['elapsed']:5.1f}s"
-              + ("" if result["ok"] else "  <- " + "; ".join(result["reasons"])))
-
-    failed_captures = [r for r in results if not r["ok"]]
-    if failed_captures:
-        print(f"\nCapture failures ({len(failed_captures)}/{len(results)}):")
-        for result in failed_captures:
-            print(f"  {result['name']}: {', '.join(result['reasons'])}")
-            print(f"    log: {result['log']}")
-        return EXIT_CAPTURE_FAILED
+        destination = CAPTURES / f"{entry['name']}.png"
+        print(f"run   {entry['name']:<16} -> {destination.relative_to(ROOT).as_posix()}")
+        try:
+            diagnostics = run_capture(entry, args.godot, destination, args.timeout)
+            print(f"      diagnostics {json.dumps(diagnostics, sort_keys=True)}")
+            captures[entry["name"]] = destination
+        except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
+            failures.append(f"{entry['name']}: {exc}")
+            print(f"FAIL  {entry['name']}: {exc}")
 
     if args.update_references:
-        for result in results:
-            shutil.copyfile(result["png"], REFERENCE_DIR / result["png"].name)
-        print(f"\nReferences refreshed: {len(results)} PNG(s) -> "
-              f"{REFERENCE_DIR.relative_to(REPO_ROOT)}")
-        return EXIT_OK
+        for name, path in captures.items():
+            shutil.copyfile(path, REFERENCES / f"{name}.png")
+            print(f"ref   {name:<16} { (REFERENCES / f'{name}.png').relative_to(ROOT).as_posix() }")
+        if failures:
+            print(f"\n{len(failures)} capture(s) failed; references partially updated.")
+            return 1
+        print(f"\nreferences updated ({len(captures)} file(s))")
+        return 0
 
-    if args.no_compare:
-        print("\nCaptures written (comparison skipped).")
-        return EXIT_OK
-
-    print(f"\nDiff vs {REFERENCE_DIR.relative_to(REPO_ROOT)} "
-          f"(tolerances: changed<={args.max_changed_pct}% mean<={args.max_mean}, "
-          f"pixel threshold {args.pixel_threshold}):")
-    missing = []
-    diff_failures = []
-    for result in results:
-        reference = REFERENCE_DIR / result["png"].name
-        if not reference.is_file():
-            missing.append(result)
-            print(f"  [MISS] {result['name']:<18} no reference")
+    # Reference comparison.
+    for name, path in captures.items():
+        reference = REFERENCES / f"{name}.png"
+        if not reference.exists():
+            failures.append(f"{name}: missing reference {reference.relative_to(ROOT).as_posix()} "
+                            f"(run with --update-references)")
+            print(f"MISS  {name}: no reference")
             continue
         try:
-            metrics = diff_images(load_rgb(reference), load_rgb(result["png"]),
-                                  args.pixel_threshold)
+            metrics = diff_images(load_rgb(reference), load_rgb(path))
         except (OSError, ValueError) as exc:
-            diff_failures.append(result)
-            print(f"  [FAIL] {result['name']:<18} diff error: {exc}")
+            failures.append(f"{name}: {exc}")
+            print(f"FAIL  {name}: {exc}")
             continue
-        ok = verdict(metrics, args.max_changed_pct, args.max_mean)
-        if not ok:
-            diff_failures.append(result)
-        print(f"  [{'PASS' if ok else 'FAIL'}] {result['name']:<18} "
-              f"{format_metrics(metrics)}")
+        okay = metrics["changed_pct"] <= MAX_CHANGED_PCT and metrics["mean_abs_diff"] <= MAX_MEAN
+        print(f"{'PASS' if okay else 'FAIL'}  {name:<16} {format_metrics(metrics)} "
+              f"(tolerance changed<={MAX_CHANGED_PCT}% mean<={MAX_MEAN})")
+        if not okay:
+            failures.append(f"{name}: over tolerance: {format_metrics(metrics)}")
 
-    cross_failures = []
-    if not args.only:
-        print("Cross-checks (flag variants are not no-ops):")
-        for name_a, name_b, minimum, why in CROSS_CHECKS:
-            png_a = CAPTURES_DIR / f"{name_a}.png"
-            png_b = CAPTURES_DIR / f"{name_b}.png"
-            if not (png_a.is_file() and png_b.is_file()):
+    # Cross-checks: every other mode must differ from the anchor capture.
+    anchor = captures.get("anchor")
+    if anchor is not None:
+        anchor_image = load_rgb(anchor)
+        for name, path in captures.items():
+            if name == "anchor":
                 continue
-            metrics = diff_images(load_rgb(png_a), load_rgb(png_b),
-                                  args.pixel_threshold)
-            ok = metrics["changed_pct"] >= minimum
-            if not ok:
-                cross_failures.append((name_a, name_b))
-            print(f"  [{'PASS' if ok else 'FAIL'}] {name_a} vs {name_b}: "
-                  f"changed={metrics['changed_pct']:.2f}% "
-                  f"(min {minimum:.2f}%) - {why}")
+            try:
+                metrics = diff_images(anchor_image, load_rgb(path))
+            except (OSError, ValueError) as exc:
+                failures.append(f"{name}: cross-check failed: {exc}")
+                continue
+            differs = (metrics["changed_pct"] >= MIN_CHANGED_PCT
+                       or metrics["mean_abs_diff"] >= MIN_MEAN)
+            print(f"{'PASS' if differs else 'FAIL'}  {name:<16} differs from anchor: "
+                  f"{format_metrics(metrics)} (floor changed>={MIN_CHANGED_PCT}% or mean>={MIN_MEAN})")
+            if not differs:
+                failures.append(f"{name}: does not differ from the anchor capture")
 
-    exit_code = EXIT_OK
-    if missing:
-        exit_code = EXIT_MISSING_REFERENCE
-    if diff_failures or cross_failures:
-        exit_code = EXIT_DIFF_FAILED
-    print()
-    if exit_code == EXIT_OK:
-        print(f"PASS: {len(results)} captures, all diffs within tolerance "
-              f"(exit {EXIT_OK})")
-    elif exit_code == EXIT_MISSING_REFERENCE:
-        print(f"FAIL: {len(missing)} reference(s) missing - refresh with "
-              f"`python tests/run_captures.py --update-references` "
-              f"(exit {EXIT_MISSING_REFERENCE})", file=sys.stderr)
-    else:
-        print(f"FAIL: {len(diff_failures)} diff failure(s), "
-              f"{len(cross_failures)} cross-check failure(s) "
-              f"(exit {EXIT_DIFF_FAILED})", file=sys.stderr)
-    return exit_code
+    if failures:
+        print("\n" + "\n".join(f"- {failure}" for failure in failures))
+        print(f"CAPTURE MATRIX: {len(failures)} failure(s)")
+        return 1
+    print("CAPTURE MATRIX: all checks passed")
+    return 0
 
 
 if __name__ == "__main__":

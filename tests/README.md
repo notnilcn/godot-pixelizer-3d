@@ -1,98 +1,99 @@
-# Pixelizer3D capture regression harness
+# tests/
 
-Screenshot tests for the demo pipeline. The runner drives the Godot CLI
-through a small capture matrix, then diffs each PNG against a checked-in
-reference with a tolerance.
+Godot binary used by every command below:
+`C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe` (4.7 mono, use
+the `_console` variant).
 
-The demo does not parse the matrix flags and prints no diagnostics line, so
-matrix runs fail the diagnostics check (exit 1).
+## `tests/bridge/` — shader-bridge fixtures (live)
 
-## Layout
+```bash
+# Headless fixtures: scan/generate, include flattening, determinism, manifest
+# round-trip, registry gating, stale-entry reporting, cloud-owner vs
+# bundled-cloud injection, and "the vendored addon tree is never written".
+# Exit 0 = all pass. Wipes and rebuilds tests/bridge/generated/ (untracked; the
+# fixtures own it, including the engine-written .uid sidecars).
+"C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --headless --path . --script res://tests/bridge/bridge_fixtures.gd
 
+# Windowed compile smoke test for the generated bridge shaders. Run
+# generate_bridges.gd (below) first in the same checkout; prints no SHADER ERROR
+# on success.
+"C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --path . res://tests/bridge/compile_test.tscn
 ```
-tests/
-  run_captures.py       # runner: capture matrix + diff + exit codes
-  compare_captures.py   # PIL diff tool (changed % / mean abs diff)
-  captures/             # fresh captures (generated, gitignored)
-  logs/                 # per-capture stdout/stderr (generated, gitignored)
-  reference/            # reference PNGs (checked in, ~2 MB)
-  README.md
-```
 
-## Quick start
+`tests/bridge/generate_bridges.gd` is additive and path-faithful: it loads the
+existing manifest when present, keeps every other entry (and approvals /
+exclusions) untouched, writes output paths through the same
+`PixelizerShaderBridge.output_path_for()` the dock uses, and re-stamps the
+`.tres` uid attributes the headless `ResourceSaver` drops. It refreshes three
+MST entries of the demo's production manifest and writes the test fixtures.
+
+## `tests/compare_captures.py` — PNG diff tool (live, standalone)
+
+Pure Python 3 + Pillow. Compares two PNGs and reports changed-pixel percentage
+and mean absolute difference.
 
 ```powershell
-# Capture + compare against the checked-in references. Exit 0 = pass.
-python tests/run_captures.py
-
-# Refresh the reference set after an intentional visual change.
-python tests/run_captures.py --update-references
-
-# Just one or two captures.
-python tests/run_captures.py --only anchor_outline,plain_outline
-
-# Diff two PNGs directly.
-python tests/compare_captures.py tests/reference/anchor_outline.png tests/captures/anchor_outline.png
+python tests/compare_captures.py before.png after.png
+python tests/compare_captures.py before.png after.png --pixel-threshold 3 --max-changed-pct 0.05 --max-mean 0.05
 ```
 
-The runner defaults to
-`C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe`; override with
-`--godot <path>` or the `PIXELIZER_GODOT` / `GODOT_EXE` environment variable.
-Pure Python 3 + Pillow (numpy not required).
+Exit codes: `0` within tolerance, `1` load error, `2` over tolerance.
 
-## Matrix (9 captures, 960x540)
+## `tests/run_captures.py` — capture regression matrix (live)
 
-| Name | Args |
-|---|---|
-| `anchor_terrain` | `--station=0` |
-| `anchor_water` | `--station=1` |
-| `anchor_outline` | `--station=3` |
-| `night_landmark` | `--night --station=2` |
-| `debug_anchor_map` | `--debug-view=1 --station=3` |
-| `lowres_outline` | `--capture-mode=lowres --station=3` |
-| `plain_outline` | `--plain --station=3` |
-| `tests_anchor` | `--tests --no-particles --station=6` |
-| `tests_perspective` | `--tests --no-particles --perspective --station=6` |
+Runs `demo/demo.tscn` through the capture CLI (`demo/capture.gd`) once per matrix
+entry, verifies the diagnostics JSON line the demo prints (a silently ignored
+flag fails the run), diffs each capture against `tests/reference/`, and checks
+that every non-anchor mode differs from the anchor capture. Needs a real
+GPU/display (Forward+).
 
-The runner asserts the capture diagnostics JSON (`mode`, `plain`, window
-size, and for `tests_*` `mover_count` / `unified_lattice` / `no_dither` /
-`perspective`) so a flag that is silently ignored fails instead of comparing the
-wrong image, and cross-checks that `plain_outline` and `lowres_outline` really
-differ from `anchor_outline` (they are not no-ops).
-
-## Determinism
-
-Each capture runs as:
-
-```
-Godot-stable_mono_win64_console.exe --path . --fixed-fps 60 -- \
-  --capture=res://tests/captures/<name>.png --resolution=960x540 <args>
+```powershell
+python tests/run_captures.py                       # compare against references
+python tests/run_captures.py --update-references   # (re)write tests/reference/
+python tests/run_captures.py --only=lowres         # one entry
+python tests/run_captures.py --godot <path>        # override the binary
 ```
 
-- `--fixed-fps 60` makes shader `TIME` frame-deterministic (Godot strips the
-  engine args from `OS.get_cmdline_args()`, so the demo cannot self-check it).
-- The god-ray pass reads the wall clock while `time_override < 0`; a value
-  `>= 0` pins the phase. Set it on the `PixelizerGodRays3D` node.
-- Default tolerance (0.05 % changed pixels, mean abs diff 0.05) absorbs
-  GPU/driver rounding.
+Matrix: `anchor` (default), `debug_anchor_map` (`--debug-view=1`), `lowres`
+(`--mode=lowres`), `plain`, `pixel_size_3`. The runner passes `--fixed-fps 60`
+and the capture helper pins the god-ray phase, so captures are byte-identical
+run to run on one machine (the reference tolerance only absorbs driver
+differences).
 
-## Tolerances & exit codes
+> **What a pass means.** A green matrix proves the captures are *stable and
+> flag-sensitive*, not that they are *correct*: the references are regenerated by
+> the same build, so a consistently wrong render still diffs to 0.0000%. Treat it
+> as a regression net for future changes, and keep the correctness evidence
+> elsewhere (the push-constant/invariant checks, `tests/dither_matrix_check.gd`,
+> `tests/mover_snap_check.gd`, and the object picker's candidate trace).
+>
+> `mover_count` in the diagnostics is always 0 in this matrix — the demo's camera
+> is perspective and mover snap is orthographic-only, so the feature is covered
+> by `tests/mover_snap_check.gd` instead.
 
-`run_captures.py`:
+Demo capture CLI flags (after a bare `--`): `--capture=<path>`,
+`--resolution=WxH`, `--fixed-view=overhead|wide|characters`, `--mode=anchor|lowres`,
+`--plain`, `--debug-view=N`, `--pixel-size=N`, `--no-overlay`, `--overlay`,
+`--settle=<frames>`.
 
-| Exit | Meaning |
-|---|---|
-| 0 | all captures ran, all diffs + cross-checks passed |
-| 1 | a capture failed (process error, missing PNG, bad diagnostics) |
-| 2 | a diff exceeded tolerance (or a cross-check failed) |
-| 3 | a reference PNG is missing - run `--update-references` |
-| 4 | environment error (Godot binary missing, unknown `--only` name) |
+## `tests/captures/` — capture output directory (generated)
 
-`compare_captures.py`: 0 within tolerance, 1 load error, 2 over tolerance.
+Written by `run_captures.py` / the demo capture CLI (gitignored apart from its
+`.gdignore`). `tests/reference/` holds the comparison baselines.
 
-Diff defaults: a pixel counts as changed when its max channel delta is **>**
-`--pixel-threshold` (3); pass requires `changed_pct <= --max-changed-pct`
-(0.05) **and** `mean_abs_diff <= --max-mean` (0.05).
+## Unit checks and tools
 
-Reference images are the *authority*: if a change is intentional, inspect the
-captures in `tests/captures/` and refresh with `--update-references`.
+```bash
+# DitherMatrix thresholds must match the shader's alpha dither cell for cell
+# ((n + 1) / 17; exit 0 = pass).
+"C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --headless --path . --script res://tests/dither_matrix_check.gd
+
+# Mover snap: a mesh under an applier with mover_snap = 1 must carry
+# `anchor_mover_snap = 1` (the whole observable contract — mover snap is a
+# vertex-stage offset, so there is no CPU transform to inspect).
+"C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --headless --path . --script res://tests/mover_snap_check.gd
+
+# Rebake the repo-root palette_lut_debug.png with the current PaletteLUT +
+# DitherMatrix code (the swatch palette is recovered from the existing image).
+"C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --headless --path . --script res://tests/bake_palette_lut_debug.gd
+```

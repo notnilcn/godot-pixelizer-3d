@@ -2,7 +2,12 @@
 tests/captures/*
 !tests/captures/.gdignore
 tests/logs/
+# Bridge fixtures own this directory: they wipe and rebuild it (including the
+# engine-written .uid sidecars), so it is not tracked.
+tests/bridge/generated/
 __pycache__/
 *.tmp
 *.log
-ALIASES.md
+*.mp4
+*.webm
+*.mkv

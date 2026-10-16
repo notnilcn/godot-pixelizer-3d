@@ -6,10 +6,12 @@ extends SceneTree
 ##
 ## Asserts scan/generate behaviour, determinism/idempotence, include flattening,
 ## the output-dir-in-root guard, stale detection, manifest round-trip, the
-## runtime registry swap, and that no file under a scanned addon root is touched.
+## runtime registry swap, and that no file under the vendored addon tree is
+## touched by a scan/generate run.
 
 const FIXTURES := "res://tests/bridge/fixtures"
 const GENERATED := "res://tests/bridge/generated"
+const MST_ROOT := "res://addons/MarchingSquaresTerrain"
 const MST_SHADERS := "res://addons/MarchingSquaresTerrain/resources/shaders"
 const MST_TERRAIN := "res://addons/MarchingSquaresTerrain/resources/shaders/mst_terrain.gdshader"
 
@@ -27,6 +29,7 @@ func _initialize() -> void:
 	_test_alpha_boundary()
 	_test_manifest_round_trip()
 	_test_registry_gating()
+	_test_stale_entry()
 	_test_output_dir_guard()
 	_test_external_files_untouched()
 	_report()
@@ -223,6 +226,56 @@ func _test_registry_gating() -> void:
 	_check(missing_registry.get_mapped_count() == 0, "missing output is not mapped")
 
 
+## Stale-entry coverage: an approved entry whose recorded source hash no longer
+## matches the source on disk is reported Stale by the dock (the editor-time
+## verdict), and regenerating from the current source clears it. Runtime
+## deliberately does NOT gate on staleness — the registry never reads source
+## files — so the fixture also pins that approved + existing output stays mapped
+## (the "rendered as authored" failure mode is for unapproved / excluded /
+## version-mismatch / missing-output entries only).
+func _test_stale_entry() -> void:
+	var source_path := GENERATED + "/stale_src.gdshader"
+	_write(source_path, _read(FIXTURES + "/stale_src.gdshader"))
+	var original := _read(source_path)
+	var result := PixelizerShaderBridge.generate(original, source_path)
+	_check(result["ok"], "stale fixture source generates")
+	var output_path := GENERATED + "/stale_src_bridge.gdshader"
+	_write(output_path, String(result["code"]))
+	var manifest := PixelizerBridgeManifest.new()
+	manifest.output_dir = GENERATED + "/"
+	var entry := manifest.get_or_create_entry(source_path)
+	entry.approved = true
+	entry.output_path = output_path
+	entry.rules_version = PixelizerBridgeRegistry.INJECTION_RULES_VERSION
+	entry.source_hash = PixelizerShaderBridge.hash_source_file(source_path)
+	entry.generated_hash = PixelizerShaderBridge.hash_text(String(result["code"]))
+	var dock := PixelizerBridgeDock.new()
+	var fresh_status := String(dock.call("_status_for", entry, PixelizerShaderBridge.scan_candidate(original, source_path)))
+	_check(fresh_status == "Up-to-date", "fresh entry reports Up-to-date (got '%s')" % fresh_status)
+	# The source changes after approval/generation: a re-scan must report Stale
+	# and the output on disk is no longer this source's transform.
+	_write(source_path, original + "\n// mutated after generation\n")
+	var scan := PixelizerShaderBridge.scan_candidate(_read(source_path), source_path)
+	_check(scan["candidate"], "mutated source is still a candidate")
+	var stale_status := String(dock.call("_status_for", entry, scan))
+	_check(stale_status == "Stale", "mutated source reports Stale (got '%s')" % stale_status)
+	var regenerated := PixelizerShaderBridge.generate(_read(source_path), source_path)
+	_check(regenerated["ok"], "mutated source regenerates")
+	_check(PixelizerShaderBridge.hash_text(String(regenerated["code"])) != entry.generated_hash,
+		"regenerated output differs from the stale one")
+	# Regenerating writes the new output and refreshes both hashes: the flag
+	# clears.
+	_write(output_path, String(regenerated["code"]))
+	entry.source_hash = PixelizerShaderBridge.hash_source_file(source_path)
+	entry.generated_hash = PixelizerShaderBridge.hash_text(String(regenerated["code"]))
+	var fixed_status := String(dock.call("_status_for", entry, scan))
+	_check(fixed_status == "Up-to-date", "regeneration clears Stale (got '%s')" % fixed_status)
+	var registry := PixelizerBridgeRegistry.new()
+	registry.build([manifest])
+	_check(registry.get_mapped_count() == 1, "approved entry with an existing output stays mapped (runtime never checks staleness)")
+	dock.free()
+
+
 func _test_output_dir_guard() -> void:
 	var manifest := PixelizerBridgeManifest.new()
 	manifest.roots = PackedStringArray([MST_SHADERS.replace("/resources/shaders", "")])
@@ -233,11 +286,16 @@ func _test_output_dir_guard() -> void:
 
 
 func _test_external_files_untouched() -> void:
-	var before := _hash_tree(MST_SHADERS)
+	# The invariant is the whole vendored addon tree, not just resources/shaders:
+	# a scan/generate run must never write anywhere under a scanned root (the
+	# vendored brush-preview .tres differs from upstream and must survive too).
+	# `.uid` / `*.import` sidecars are excluded because the engine rewrites those
+	# on import, independent of the bridge.
+	var before := _hash_tree(MST_ROOT)
 	var result := PixelizerShaderBridge.generate(_read(MST_TERRAIN), MST_TERRAIN)
 	_check(result["ok"], "MST terrain is bridgeable")
 	_write(GENERATED + "/mst_terrain_check.gdshader", String(result["code"]))
-	var after := _hash_tree(MST_SHADERS)
+	var after := _hash_tree(MST_ROOT)
 	_check(before == after, "no file under the MST addon root changed during scan/generate")
 	_check(String(result["code"]).contains("anchor_macros.gdshaderinc"), "MST shader includes the bundled macros/cloud toolkit")
 	_check(not String(result["code"]).contains("#define PIXELIZER_NO_CLOUD"), "MST shader (no vendored clouds) uses the bundled toolkit")
@@ -279,7 +337,7 @@ func _hash_tree_into(root: String, out: Dictionary) -> void:
 	dir.list_dir_begin()
 	var name := dir.get_next()
 	while not name.is_empty():
-		if not name.begins_with("."):
+		if not name.begins_with(".") and not name.ends_with(".uid") and not name.ends_with(".import"):
 			var full := root.path_join(name)
 			if dir.current_is_dir():
 				_hash_tree_into(full, out)
