@@ -3,7 +3,8 @@
 
 Runs the demo once per matrix entry with the small capture CLI implemented in
 `demo/capture.gd` (`--capture`, `--resolution`, `--fixed-view`, `--mode`,
-`--plain`, `--debug-view`, `--pixel-size`, `--no-overlay`, `--settle`), verifies
+`--plain`, `--debug-view`, `--pixel-size`, `--no-overlay`, `--settle`,
+`--outline-terrain`, `--ortho`, `--mover-snap`, `--palette-lut`), verifies
 the diagnostics JSON line the demo prints, diffs each capture against
 `tests/reference/`, and cross-checks that every non-anchor mode actually differs
 from the anchor capture (a silently ignored flag fails the run).
@@ -79,6 +80,27 @@ MATRIX = [
         "args": ["--fixed-view=overhead", "--no-overlay", "--pixel-size=3"],
         "expect": {"pixel_size": 3},
     },
+    {
+        # The dense outline case: every applier outlined, the terrain included
+        # (the configuration the D-series outline work exists for).
+        "name": "outline_dense",
+        "args": ["--fixed-view=overhead", "--no-overlay", "--outline-terrain"],
+        "expect": {"outline_terrain": True, "ortho": False},
+    },
+    {
+        # Mover snap is orthographic-only, so the perspective entries never
+        # reach the vertex-stage snap; this one does.
+        "name": "ortho_mover",
+        "args": ["--fixed-view=overhead", "--no-overlay", "--ortho", "--mover-snap"],
+        "expect": {"ortho": True},
+        "expect_positive": ["mover_count"],
+    },
+    {
+        # Bake -> global uniform -> grade, which the demo never exercises.
+        "name": "palette_lut",
+        "args": ["--fixed-view=overhead", "--no-overlay", "--palette-lut"],
+        "expect": {"palette_lut": True},
+    },
 ]
 
 
@@ -113,6 +135,10 @@ def run_capture(entry: dict, godot: str, destination: Path, timeout: float) -> d
             raise RuntimeError(
                 f"{entry['name']}: flag not honoured: {key}={actual!r} "
                 f"(expected {expected!r}); diagnostics={diagnostics}")
+    for key in entry.get("expect_positive", []):
+        if not diagnostics.get(key, 0) > 0:
+            raise RuntimeError(
+                f"{entry['name']}: expected {key} > 0; diagnostics={diagnostics}")
     return diagnostics
 
 

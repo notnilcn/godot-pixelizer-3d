@@ -12,6 +12,11 @@ var _next_id := 1
 var _working: PixelizerOutlinePalette
 var _texture: ImageTexture
 var _dirty := true
+## Per-tag runtime state written through `set_color` / `set_enabled`
+## (id -> {"color": Color} or {"enabled": false}). Re-applied whenever the
+## working copy is reseeded, so a settings change or palette swap never drops a
+## hidden tag or a per-applier colour while the appliers' re-scan is pending.
+var _tag_state: Dictionary = {}
 
 
 ## Next outline tag id (1-254; 255 is reserved for the focus subject).
@@ -28,9 +33,9 @@ func allocate_id() -> int:
 func set_color(id: int, color: Color) -> void:
 	if id < 0 or id > 255:
 		return
+	_tag_state[id] = {"color": color}
 	_ensure_working()
-	_working.set_entry(id, color, color, color.a, color.a)
-	_dirty = true
+	_write_color(id, color)
 
 
 ## Show or hide the screen-space outline for one edge tag. Hiding writes an
@@ -42,7 +47,20 @@ func set_color(id: int, color: Color) -> void:
 func set_enabled(id: int, enabled: bool) -> void:
 	if id < 0 or id > 255:
 		return
+	if enabled:
+		_tag_state.erase(id)
+	else:
+		_tag_state[id] = {"enabled": false}
 	_ensure_working()
+	_write_enabled(id, enabled)
+
+
+func _write_color(id: int, color: Color) -> void:
+	_working.set_entry(id, color, color, color.a, color.a)
+	_dirty = true
+
+
+func _write_enabled(id: int, enabled: bool) -> void:
 	var palette: PixelizerOutlinePalette = manager.get_settings().outline_palette
 	if enabled and palette != null and id < palette.silhouette_colors.size():
 		_working.set_entry(
@@ -75,7 +93,7 @@ func is_multiply() -> bool:
 
 
 ## Drop the working copy so the next use reseeds from the authored palette /
-## manager colour (call when those change).
+## manager colour (call when those change). Per-tag state survives the reseed.
 func invalidate() -> void:
 	_working = null
 	_dirty = true
@@ -96,5 +114,11 @@ func _ensure_working() -> void:
 		var color: Color = manager.get_settings().default_outline_color
 		for i in PixelizerOutlinePalette.ROW_COUNT:
 			_working.set_entry(i, color, color, color.a, color.a)
+	for id in _tag_state:
+		var state: Dictionary = _tag_state[id]
+		if state.has("color"):
+			_write_color(id, state["color"])
+		else:
+			_write_enabled(id, false)
 	_dirty = true
 

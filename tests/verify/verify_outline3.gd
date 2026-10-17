@@ -1,5 +1,7 @@
-## Moved here from the 2026-10-16 verification session's scratchpad so it is not lost.
-## TRUST: PARTIAL - read VERIFICATION.md item 1 before trusting any line. D1a-style flat-plane and the D3 gate are the goals; the D3 exposed-rect control reports 0 px (a framing problem, unexplained) so its occluded-rect 0 is currently vacuous. The D1b crease pair disagreed across runs (see item 4).
+## TRUST: FULL for every asserted check as of 2026-10-16 (0 px noise floor).
+## The D3 exposed-rect control inks (~2100 px) while the occluded rect stays at
+## 0, so the occluded 0 is not vacuous. The earlier "exposed rect 0 px" result
+## is not reproducible with this file.
 extends SceneTree
 
 ## In-game verification of the three outline paths with no reproduction in the
@@ -33,9 +35,14 @@ extends SceneTree
 ##       toggling outlines on must change ~nothing there, while the pixelized
 ##       right half changes a lot.
 ##   D2  with `multiply_colors` on, rows at 0.5 are a no-op (the shader does
-##       `color *= linear(rgb) * 2`) and rows at 0.25 darken.
-##   D1b with SSAO on (which forces the engine's normal-roughness buffer),
-##       raising `outline_normal_threshold` changes the render.
+##       `color *= rgb * 2` with the authored value as the factor) and rows at
+##       0.25 darken.
+##   D1b with a material that samples `hint_normal_roughness_texture` in frame
+##       (which forces the engine's normal-roughness buffer; SSAO stays off),
+##       raising `outline_normal_threshold` changes the render, and the same
+##       toggle WITHOUT the forcing mesh renders identically: the manager
+##       requests the buffer itself (`needs_normal_roughness`) while the term
+##       is on.
 ##
 ## Run (needs a real renderer):
 ##   Godot-stable_mono_win64_console.exe --path . --fixed-fps 60 \
@@ -61,6 +68,9 @@ var _img_mult_half: Image
 var _img_mult_quarter: Image
 var _img_crease_off: Image
 var _img_crease_on: Image
+var _img_nobuf_off: Image
+var _img_nobuf_on: Image
+var _forcer: MeshInstance3D
 
 
 func _initialize() -> void:
@@ -110,21 +120,32 @@ func _process(_delta: float) -> bool:
 		# 10: capture
 		10:
 			_img_mult_quarter = _grab()
-		# 11-12: crease off (SSAO on, threshold 0)
+		# 11-14: the same toggle BEFORE the forcer is ever shown (no SSAO, no
+		# material requesting the buffer). It must run first: once the engine
+		# has allocated the buffer, the scene buffers keep it. Measured
+		# Without the manager's request the buffer was allocated here anyway but
+		# never written, which this order is what exposed.
 		11:
 			_look.outline_palette = null
 			_look.outline_normal_threshold = 0.0
-			var env := _environment()
-			if env != null:
-				env.ssao_enabled = true
-		# 12: capture
 		12:
-			_img_crease_off = _grab()
-		# 13-14: crease on (threshold 0.6)
+			_img_nobuf_off = _grab()
 		13:
 			_look.outline_normal_threshold = 0.6
-		# 14: capture, evaluate, done
 		14:
+			_img_nobuf_on = _grab()
+		# 15-16: crease off with the forcing mesh (a material that samples
+		# `hint_normal_roughness_texture`, which makes the engine create the
+		# buffer; SSAO stays off).
+		15:
+			_look.outline_normal_threshold = 0.0
+			_forcer.visible = true
+		16:
+			_img_crease_off = _grab()
+		# 17-18: crease on (threshold 0.6); capture, evaluate, done
+		17:
+			_look.outline_normal_threshold = 0.6
+		18:
 			_img_crease_on = _grab()
 			_evaluate()
 			quit(0 if _failures.is_empty() else 1)
@@ -192,6 +213,28 @@ func _setup() -> void:
 	_quad.position = Vector3(-0.52, 0.0, -2.0)
 	_camera.add_child(_quad)
 
+	# Positive control for the crease term: a tiny non-pixelized quad whose
+	# material samples the normal-roughness texture, in the top-right corner of
+	# the frame (its own pixels are excluded from the measured rects). Its only
+	# job is to make the renderer allocate the buffer; hidden by default.
+	_forcer = MeshInstance3D.new()
+	_forcer.name = "NormalRoughnessForcer"
+	var forcer_mesh := QuadMesh.new()
+	forcer_mesh.size = Vector2(0.02, 0.02)
+	_forcer.mesh = forcer_mesh
+	var forcer_shader := Shader.new()
+	forcer_shader.code = "shader_type spatial;
+render_mode unshaded;
+uniform sampler2D nr : hint_normal_roughness_texture, filter_nearest;
+void fragment() { ALBEDO = texture(nr, SCREEN_UV).rgb; }
+"
+	var forcer_mat := ShaderMaterial.new()
+	forcer_mat.shader = forcer_shader
+	_forcer.material_override = forcer_mat
+	_forcer.position = Vector3(0.4, 0.2, -1.0)
+	_forcer.visible = false
+	_camera.add_child(_forcer)
+
 
 func _multiply_palette(row: float) -> PixelizerOutlinePalette:
 	var palette := PixelizerOutlinePalette.new()
@@ -204,7 +247,7 @@ func _multiply_palette(row: float) -> PixelizerOutlinePalette:
 func _evaluate() -> void:
 	if _img_off_quad == null or _img_on_quad == null or _img_off_a == null or _img_off_b == null \
 			or _img_mult_half == null or _img_mult_quarter == null \
-			or _img_crease_off == null or _img_crease_on == null:
+			or _img_crease_off == null or _img_crease_on == null 			or _img_nobuf_off == null or _img_nobuf_on == null:
 		_check(false, "all captures succeeded")
 		return
 	var size := _img_off_quad.get_size()
@@ -254,11 +297,22 @@ func _evaluate() -> void:
 	_check(darker, "multiply rows of 0.25 darken the inked blocks")
 
 	# ── D1b: the crease term ────────────────────────────────────────────────
-	var crease_px := _count_changed(_img_crease_off, _img_crease_on, Rect2i(Vector2i.ZERO, size))
-	var crease := not _images_match(_img_crease_off, _img_crease_on, 0)
-	print("D1b crease with SSAO: threshold 0 vs 0.6 -> %s (%d px changed, noise floor was %d)" % [
-		"DIFFERENT" if crease else "identical", crease_px, noise])
-	_check(crease and crease_px > noise, "with the normal-roughness buffer present, raising outline_normal_threshold changes the render beyond the noise floor")
+	var whole := Rect2i(Vector2i.ZERO, size)
+	var crease_px := _count_changed(_img_crease_off, _img_crease_on, whole)
+	print("D1b crease, forcing mesh present (SSAO off): threshold 0 vs 0.6 -> %d px changed (noise floor %d)" % [crease_px, noise])
+	_check(crease_px > noise + 100, "with the normal-roughness buffer forced, raising outline_normal_threshold changes the render beyond the noise floor (%d px)" % crease_px)
+	var nobuf_px := _count_changed(_img_nobuf_off, _img_nobuf_on, whole)
+	print("D1b unforced (no SSAO, no requesting material): threshold 0 vs 0.6 -> %d px changed" % nobuf_px)
+	# The forcer's own pixels differ between the two pairs; everything else
+	# must not, i.e. the unforced buffer holds the same live normals.
+	var forcer_px := _count_changed(_img_nobuf_off, _img_crease_off, whole)
+	var forced_vs_unforced := _count_changed(_img_nobuf_on, _img_crease_on, whole)
+	print("D1b forced vs unforced: %d px with the term on, %d px with it off (forcer quad only)" % [forced_vs_unforced, forcer_px])
+	_check(forcer_px > 0, "the forcing quad is on screen (%d px)" % forcer_px)
+	# Before the manager set `needs_normal_roughness`, the unforced buffer was
+	# allocated but never written (uninitialised contents, ~20k px off).
+	_check(forced_vs_unforced == forcer_px,
+		"the crease term renders identically with and without a material forcing the buffer (%d vs %d px)" % [forced_vs_unforced, forcer_px])
 
 	if _failures.is_empty():
 		print("IN-GAME OUTLINE CHECK: %d checks, ALL PASS" % _checks)

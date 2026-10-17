@@ -1,5 +1,6 @@
-## Moved here from the 2026-10-16 verification session's scratchpad so it is not lost.
-## TRUST: the B1/A3/F3 checks are valid and pass. The two F1 checks FAIL BY DESIGN OF THE PROBE, not the addon: demo.tscn pins pixel_size=5 on the top-level applier and resolution is nearest-author-wins, so the settings default cannot reach Knight_Body. Retarget them at an inheriting mesh (or fix the claim) - see VERIFICATION.md item 6.
+## TRUST: every check is valid as of 2026-10-16. F1 measures the inheriting
+## Knight_Body (must follow the settings default) and a terrain chunk under an
+## applier the probe pins (must not).
 extends SceneTree
 
 ## In-game verification of the state-and-wiring claims that headless runs and
@@ -13,7 +14,7 @@ extends SceneTree
 ##       `deck_enabled`/`clouds_enabled` update `visible` even with
 ##       `follow_camera = false`, and the day/night arc params re-apply.
 ##   F1  a live `PixelizerSettings` change and a whole-resource swap propagate
-##       to bound geometry.
+##       to geometry that inherits, and not to geometry under a pinned applier.
 ##   F3  a camera-scoped cloud provider is selected by the active camera.
 ##
 ## Run (needs a real renderer for the demo to build its pipeline):
@@ -210,39 +211,37 @@ func _daynight_check() -> void:
 
 
 # ── F1: settings propagation ────────────────────────────────────────────────
+#
+# Two subjects, because `_resolve_setting()` is nearest-author-wins:
+# `Knight_Body` INHERITS `pixel_size` (demo.tscn pins no applier, so it must
+# follow the settings default), while the probe PINS the nested terrain applier
+# at `pixel_size = 4` (its chunks must NOT follow it). Asserting both makes the
+# check able to fail in either direction.
 
 ## The write and the read are split across frames: an applier reacts to a
 ## settings change through a deferred rescan, so a same-frame read returns the
 ## pre-change value.
 func _settings_live_set() -> void:
-	var mesh := _find_named(root, "Knight_Body") as MeshInstance3D
-	_check(mesh != null, "a bound mesh exists for the settings check")
-	if mesh == null:
-		return
+	_check(_inheriting_mesh() != null, "an inheriting bound mesh (Knight_Body) exists for the settings check")
+	_check(_pinned_mesh() != null, "a pinned bound mesh (terrain chunk) exists for the settings check")
+	_terrain_applier().pixel_size = 4
 	_look.default_pixel_size = 3
 
 
 func _settings_live_assert_and_restore() -> void:
-	var mesh := _find_named(root, "Knight_Body") as MeshInstance3D
-	if mesh == null:
-		return
-	var size := int(mesh.get_instance_shader_parameter("anchor_size"))
-	_check(size == 3, "a live default_pixel_size change reaches bound geometry (anchor_size = %d)" % size)
+	_check(_anchor_size(_inheriting_mesh()) == 3,
+		"a live default_pixel_size change reaches inheriting geometry (anchor_size = %d)" % _anchor_size(_inheriting_mesh()))
+	_check(_anchor_size(_pinned_mesh()) == 4,
+		"geometry under a pinned applier ignores the settings default (anchor_size = %d)" % _anchor_size(_pinned_mesh()))
 	_look.default_pixel_size = 5
 
 
 func _settings_live_assert_restored() -> void:
-	var mesh := _find_named(root, "Knight_Body") as MeshInstance3D
-	if mesh == null:
-		return
-	var restored := int(mesh.get_instance_shader_parameter("anchor_size"))
-	_check(restored == 5, "restoring default_pixel_size restores anchor_size (%d)" % restored)
+	_check(_anchor_size(_inheriting_mesh()) == 5,
+		"restoring default_pixel_size restores anchor_size (%d)" % _anchor_size(_inheriting_mesh()))
 
 
 func _settings_swap_set() -> void:
-	var mesh := _find_named(root, "Knight_Body") as MeshInstance3D
-	if mesh == null:
-		return
 	_original_settings = _manager.settings
 	var fresh := PixelizerSettings.new()
 	fresh.default_pixel_size = 2
@@ -254,20 +253,41 @@ func _settings_swap_set() -> void:
 
 
 func _settings_swap_assert_and_restore() -> void:
-	var mesh := _find_named(root, "Knight_Body") as MeshInstance3D
-	if mesh == null:
-		return
-	var size := int(mesh.get_instance_shader_parameter("anchor_size"))
-	_check(size == 2, "swapping the whole settings resource propagates (anchor_size = %d)" % size)
+	_check(_anchor_size(_inheriting_mesh()) == 2,
+		"swapping the whole settings resource propagates (anchor_size = %d)" % _anchor_size(_inheriting_mesh()))
+	_check(_anchor_size(_pinned_mesh()) == 4,
+		"a settings swap leaves pinned geometry alone (anchor_size = %d)" % _anchor_size(_pinned_mesh()))
 	_manager.settings = _original_settings
+	_terrain_applier().pixel_size = PixelizerInherit.INHERIT
 
 
 func _settings_swap_assert_restored() -> void:
-	var mesh := _find_named(root, "Knight_Body") as MeshInstance3D
+	_check(_anchor_size(_inheriting_mesh()) == 5,
+		"restoring the authored settings restores anchor_size (%d)" % _anchor_size(_inheriting_mesh()))
+
+
+func _inheriting_mesh() -> MeshInstance3D:
+	return _find_named(root, "Knight_Body") as MeshInstance3D
+
+
+func _pinned_mesh() -> MeshInstance3D:
+	var terrain := _find_named(root, "MarchingSquaresTerrain")
+	if terrain == null:
+		return null
+	var chunks: Array = []
+	_collect_meshes(terrain, chunks)
+	return chunks[0] as MeshInstance3D if not chunks.is_empty() else null
+
+
+func _terrain_applier() -> PixelizerApplier3D:
+	var terrain := _find_named(root, "MarchingSquaresTerrain")
+	return terrain.get_parent() as PixelizerApplier3D if terrain != null else null
+
+
+func _anchor_size(mesh: MeshInstance3D) -> int:
 	if mesh == null:
-		return
-	var restored := int(mesh.get_instance_shader_parameter("anchor_size"))
-	_check(restored == 5, "restoring the authored settings restores anchor_size (%d)" % restored)
+		return -1
+	return int(mesh.get_instance_shader_parameter("anchor_size"))
 
 
 # ── F3: camera-scoped cloud providers ───────────────────────────────────────

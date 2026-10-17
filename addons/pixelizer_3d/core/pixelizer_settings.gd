@@ -125,8 +125,10 @@ extends Resource
 		_emit()
 ## Crease sensitivity: mark an inner edge when `1 - dot(normal, neighbour)`
 ## across one macro step exceeds this. 0 disables. Needs the engine's
-## normal-roughness buffer (SSAO/SSIL/SSR or a `hint_normal_roughness_texture`
-## material); the apply pass warns once and skips the term otherwise.
+## normal-roughness buffer, which the manager requests from the depth prepass
+## (`CompositorEffect.needs_normal_roughness`) while this is above 0, so no SSAO
+## or special material is needed. The apply pass warns once and skips the term
+## when the buffer is missing (non-Forward+ renderers).
 @export_range(0.0, 1.0, 0.01) var outline_normal_threshold := 0.0:
 	set(value):
 		outline_normal_threshold = value

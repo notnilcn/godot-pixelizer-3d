@@ -181,7 +181,6 @@ metadata/_custom_type_script = "uid://kg625atl872n"
 
 [node name="PixelizerApplier3D" type="Node3D" parent="." unique_id=1347928734]
 script = ExtResource("6_applier")
-pixel_size = 5
 metadata/_custom_type_script = "uid://btdtpfyyn50j0"
 
 [node name="PixelizerApplier3D" type="Node3D" parent="PixelizerApplier3D" unique_id=2075519741]

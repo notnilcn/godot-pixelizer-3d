@@ -23,9 +23,32 @@ the `_console` variant).
 `tests/bridge/generate_bridges.gd` is additive and path-faithful: it loads the
 existing manifest when present, keeps every other entry (and approvals /
 exclusions) untouched, writes output paths through the same
-`PixelizerShaderBridge.output_path_for()` the dock uses, and re-stamps the
-`.tres` uid attributes the headless `ResourceSaver` drops. It refreshes three
-MST entries of the demo's production manifest and writes the test fixtures.
+`PixelizerShaderBridge.output_path_for()` the dock uses, and saves through
+`PixelizerBridgeManifest.save_to()` (shared with the dock), which keeps the
+`.tres` UIDs a headless `ResourceSaver.save()` drops. On an unchanged tree the
+production manifest regenerates byte-identical. It refreshes three MST entries
+of the demo's production manifest and writes the test fixtures.
+
+## Headless unit checks (live)
+
+```bash
+G="C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe"
+"$G" --headless --path . --fixed-fps 60 --script res://tests/dither_matrix_check.gd          # ordered-dither thresholds
+"$G" --headless --path . --fixed-fps 60 --script res://tests/mover_snap_check.gd             # mover-snap registration
+"$G" --headless --path . --fixed-fps 60 --script res://tests/unsupported_material_check.gd   # one hint per skipped node; late opt-ins bind
+"$G" --headless --path . --fixed-fps 60 --script res://tests/bridge_watchdog_check.gd        # B1: a swapped first bind arms the watchdog
+```
+
+Exit 0 = all pass. `tests/fixtures/` holds their shader fixtures.
+
+## `tests/verify/` — in-game probes (live, windowed)
+
+Probes against the real demo with a real renderer; each file's `TRUST` header
+says which of its assertions are valid. `VERIFICATION.md` Part 3 lists the
+measurement traps they are built around (last-rendered-frame grabs, the
+animated scene, no colour predicate for ink, controls that can fail).
+`verify_outline3.gd` is the D3 ink-gate acceptance test, the multiply-mode
+check and the crease-term check.
 
 ## `tests/compare_captures.py` — PNG diff tool (live, standalone)
 
@@ -55,7 +78,11 @@ python tests/run_captures.py --godot <path>        # override the binary
 ```
 
 Matrix: `anchor` (default), `debug_anchor_map` (`--debug-view=1`), `lowres`
-(`--mode=lowres`), `plain`, `pixel_size_3`. The runner passes `--fixed-fps 60`
+(`--mode=lowres`), `plain`, `pixel_size_3`, `outline_dense`
+(`--outline-terrain`: every applier outlined, terrain included),
+`ortho_mover` (`--ortho --mover-snap`; the runner also requires
+`mover_count > 0`) and `palette_lut` (`--palette-lut`: a runtime-baked 8-colour
+LUT through the global uniform). The runner passes `--fixed-fps 60`
 and the capture helper pins the god-ray phase, so captures are byte-identical
 run to run on one machine (the reference tolerance only absorbs driver
 differences).
@@ -67,14 +94,16 @@ differences).
 > elsewhere (the push-constant/invariant checks, `tests/dither_matrix_check.gd`,
 > `tests/mover_snap_check.gd`, and the object picker's candidate trace).
 >
-> `mover_count` in the diagnostics is always 0 in this matrix — the demo's camera
-> is perspective and mover snap is orthographic-only, so the feature is covered
-> by `tests/mover_snap_check.gd` instead.
+> `mover_count` counts geometry with `anchor_mover_snap = 1`. It is 0 for every
+> perspective entry (mover snap is orthographic-only) and positive only for
+> `ortho_mover`. (Before 2026-10-16 the count was always 0 because the helper
+> searched by script class name, which plain meshes do not have.)
 
 Demo capture CLI flags (after a bare `--`): `--capture=<path>`,
 `--resolution=WxH`, `--fixed-view=overhead|wide|characters`, `--mode=anchor|lowres`,
 `--plain`, `--debug-view=N`, `--pixel-size=N`, `--no-overlay`, `--overlay`,
-`--settle=<frames>`.
+`--settle=<frames>`, `--outline-terrain`, `--ortho`, `--mover-snap`,
+`--palette-lut`.
 
 ## `tests/captures/` — capture output directory (generated)
 

@@ -38,8 +38,8 @@ layout(set = 0, binding = 4) uniform sampler2D normal_roughness_texture;
 // colour always comes from `outline_palette`. `palette_enabled` is reserved.
 layout(push_constant, std430) uniform Params {
 	vec2 screen_size;
-	float z_near;
-	float z_far;
+	float proj_zz; // projection[2][2] (reverse-Z, [0, 1] depth)
+	float proj_wz; // projection[3][2]
 	float is_ortho;
 	float debug_view;
 	float depth_occlusion;
@@ -64,11 +64,20 @@ vec3 srgb_to_linear(vec3 c) {
 	return mix(low, high, step(vec3(0.04045), c));
 }
 
+// View-space distance of a raw depth sample, inverted from the engine's own
+// projection matrix (`raw = (P22 * z + P32) / (P23 * z + P33)`, view z < 0).
+// Never derive near/far through `Projection.get_z_near()`: the matrix is
+// reverse-Z, and those helpers assume the OpenGL convention.
 float linearize_depth(float raw) {
 	if (params.is_ortho > 0.5) {
-		return params.z_far - raw * (params.z_far - params.z_near);
+		return (params.proj_wz - raw) / params.proj_zz;
 	}
-	return (params.z_near * params.z_far) / (params.z_near + raw * (params.z_far - params.z_near));
+	return params.proj_wz / (raw + params.proj_zz);
+}
+
+// Distance of the far plane (raw depth 0 under reverse-Z), for the debug views.
+float far_distance() {
+	return params.proj_wz / params.proj_zz;
 }
 
 // Inline anchor search: for this pixel, find the nearest anchor that can own
@@ -133,7 +142,7 @@ void main() {
 			frag_color = vec4(texture(metadata_texture, uv).rgb, 1.0);
 		} else if (debug_mode == 3) {
 			// 3 = linearised scene depth.
-			float lin = linearize_depth(base_raw) / max(params.z_far, 0.001);
+			float lin = linearize_depth(base_raw) / max(far_distance(), 0.001);
 			frag_color = vec4(vec3(1.0 - lin), 1.0);
 		} else if (debug_mode == 4) {
 			// 4 = the colour copy as-is.
@@ -146,7 +155,7 @@ void main() {
 			float base_depth = linearize_depth(base_raw);
 			float snapped_depth = linearize_depth(anchor_raw);
 			float tolerance = max(0.05, snapped_depth * 0.002);
-			float half_far = params.z_far * 0.5;
+			float half_far = far_distance() * 0.5;
 			frag_color = vec4(
 				base_depth < half_far ? 1.0 : 0.0,
 				snapped_depth < half_far ? 1.0 : 0.0,
@@ -178,11 +187,30 @@ void main() {
 	}
 	vec3 color = revert ? texture(source_color, uv).rgb : texture(source_color, snapped_uv).rgb;
 
+	// Foreign-surface test at the anchor's OWN screen position: the metadata
+	// camera saw the anchor at view depth `meta.b`, and the main camera renders
+	// the same pixelized geometry with the same vertex stage, so the scene depth
+	// at `snapped_uv` equals that depth unless a non-pixelized surface (invisible
+	// to the metadata camera) sits in front of it. `revert` misses this case when
+	// the occluder spans the whole block, because then both of its depth samples
+	// are the occluder's. Comparing the same pixel in both buffers keeps blocks
+	// that straddle a silhouette inked (the anchor on the far surface is still
+	// the visible survivor at its own pixel). The tolerance absorbs the half-float
+	// metadata depth.
+	bool anchor_hidden = false;
+	vec4 snapped_meta = texture(metadata_texture, snapped_uv);
+	if (round(snapped_meta.r * 32.0) > 0.5) {
+		float meta_depth = snapped_meta.b;
+		float scene_depth = linearize_depth(anchor_raw);
+		anchor_hidden = scene_depth < meta_depth - max(0.1, meta_depth * 0.01);
+	}
+	bool visible_anchor = !revert && !anchor_hidden;
+
 	// Screen-space outlines: mark a whole macro block when its anchor sits next
 	// to a different id, to the background, or across a depth discontinuity.
-	// A block that is not the visible surface (`revert`) must not ink its
-	// neighbours: a pixelized object behind a non-pixelized wall would
-	// otherwise paint an outline onto the wall.
+	// A block that is not the visible surface (`revert`, or an anchor hidden by
+	// a non-pixelized surface) must not ink its neighbours: a pixelized object
+	// behind a non-pixelized wall would otherwise paint an outline onto the wall.
 	//
 	// Depth discontinuities use a SECOND difference (`2*centre - a - b`) and
 	// only mark where the centre is the nearer (convex) side, so a slope at any
@@ -191,8 +219,8 @@ void main() {
 	// A step beyond `outline_interior_threshold` is an exterior edge (silhouette
 	// row); a smaller one is an interior detail (inner row). Tag changes and
 	// the background test are unchanged (either side marks).
-	if (params.outline_enabled > 0.5 && !revert) {
-		vec4 anchor_meta = texture(metadata_texture, snapped_uv);
+	if (params.outline_enabled > 0.5 && visible_anchor) {
+		vec4 anchor_meta = snapped_meta;
 		float anchor_ps = round(anchor_meta.r * 32.0);
 		if (anchor_ps > 0.5) {
 			float anchor_id = anchor_meta.g;
@@ -254,25 +282,27 @@ void main() {
 			if (silhouette_edge || exterior_edge || inner_edge) {
 				// The outline colour always comes from the palette (the manager
 				// writes the opacity-0 "off" row for hidden tags). Opacity mode
-				// replaces; multiply mode (rows authored around 0.5) modulates.
+				// replaces; multiply mode (rows authored around 0.5, 0.5 = no-op) modulates.
 				float row = (silhouette_edge || exterior_edge) ? 0.25 : 0.75;
 				float id_int = round(anchor_id * 256.0);
 				vec4 palette_row = texture(outline_palette, vec2((id_int + 0.5) / 256.0, row));
-				vec3 outline_rgb = srgb_to_linear(palette_row.rgb);
 				if (params.outline_multiply > 0.5) {
-					color *= outline_rgb * 2.0;
+					// The authored value IS the modulation factor, not a colour,
+					// so it is not sRGB-decoded: 0.5 is invisible (ProPixelizer's
+					// `_EdgeHighlightColor` convention). The opacity still applies,
+					// so a hidden tag's opacity-0 row stays a no-op.
+					color = mix(color, color * palette_row.rgb * 2.0, palette_row.a);
 				} else {
-					color = mix(color, outline_rgb, palette_row.a);
+					color = mix(color, srgb_to_linear(palette_row.rgb), palette_row.a);
 				}
 			}
 		}
 	}
 
-	// Debug: tint focused (tag 255) blocks red. Not on reverted (occluded)
-	// pixels, same as the outline.
-	if (params.debug_focus_mask > 0.5 && !revert) {
-		vec4 focus_meta = texture(metadata_texture, snapped_uv);
-		float focus_id = round(focus_meta.g * 256.0);
+	// Debug: tint focused (tag 255) blocks red. Not on occluded pixels, same as
+	// the outline.
+	if (params.debug_focus_mask > 0.5 && visible_anchor) {
+		float focus_id = round(snapped_meta.g * 256.0);
 		if (focus_id >= 254.5) {
 			color = mix(color, srgb_to_linear(vec3(1.0, 0.0, 0.0)), 0.5);
 		}

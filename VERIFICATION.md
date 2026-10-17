@@ -1,218 +1,156 @@
-# VERIFICATION.md — what still needs work
+# VERIFICATION.md — status of the verification follow-up
 
-Written 2026-10-16, at the end of a verification pass over the audit fixes.
-**Audience: a fresh session with no prior context.** Read in this order:
+Originally written 2026-10-16 as the open-work handoff after the in-game
+verification pass; **updated 2026-10-16 (fourth session) with the outcome of
+each item.** Read with `SUMMARY.md` → "Fourth session" and `AGENTS.md`.
 
-1. this file (open work),
-2. `SUMMARY.md` → "In-game verification pass" (what was verified, how, and what
-   the verification itself got wrong),
-3. `AGENTS.md` (architecture + the invariants that must survive any change),
-4. `PLAN.md` (the original task spec; sections A–G, already executed).
-
-Branch `audit-fixes-2026-10` holds four commits: the fixes+tests, the tests, the
-docs, the plan+record, then `ada9947` (this verification pass). Nothing is
-pushed. The working tree is clean apart from the owner's untracked
-`docs/references/`.
-
-Everything below was found by running the demo with a real renderer. Nothing
-here is speculative about *whether* a problem exists — but where I could not
-determine a cause, it says so.
+Summary: both defects are fixed, and fixing the first one uncovered a bigger
+one — **depth linearisation in the apply pass had never produced metric depth**,
+so the `revert` occlusion guard never fired. Every gap in Part 2 is closed or
+recorded with a measured result. A follow-up in the same session closed the
+last two open items (item 3's unforced crease buffer, Part 5's uid re-stamp).
+Nothing from the fourth session is committed yet.
 
 ---
 
-## Part 1 — Open defects
+## Part 1 — Defects
 
-### 1. The outline gate does not fire for a full-block non-pixelized occluder
-*(highest priority: it is a shipped behaviour defect, and the plan's item D3 was
-supposed to fix exactly this)*
+### 1. The outline gate did not fire for a full-block non-pixelized occluder — **FIXED**
 
-**Symptom.** A non-pixelized object in front of pixelized geometry is correctly
-not colour-smeared, but it still receives the pixelized object's **outline ink**:
-the character's silhouette is painted onto the wall in front of it.
+**Root cause, larger than the symptom.** `pixelizer_apply_effect.gd` pushed
+`projection.get_z_near()` / `get_z_far()`, but the projection the compositor
+receives is reverse-Z with a [0, 1] range, and those helpers assume the OpenGL
+convention: in the demo they returned −0.05 / 0.05. `linearize_depth()` thus
+returned ~0.05 m everywhere (measured: scene-depth / metadata-depth ratio a
+constant 0.0018), so `revert` (tolerance 0.05 m) never fired for *any* occluder.
+The pass now pushes `projection.z.z` / `projection.w.z` and inverts the matrix
+(measured ratio ≈ 1.00; the push block is still 16 floats).
 
-**Mechanism** (`addons/pixelizer_3d/shaders/compute/apply_pixelization.glsl`):
+**Gate.** `anchor_hidden`: the scene depth at the anchor's own pixel is nearer
+than the metadata depth recorded at that same pixel, i.e. a non-pixelized
+surface (invisible to the metadata camera) covers the anchor. Ink and the focus
+tint now need `!revert && !anchor_hidden`. Unlike the reverted attempt, this
+compares one pixel across two buffers, so a straddling block whose anchor sits
+on the far surface still inks (the anchor is the visible survivor at its own
+pixel).
 
-- `:121-122` — `base_raw = texture(depth_copy, uv).r` and
-  `anchor_raw = texture(depth_copy, snapped_uv).r`. Both are samples of the
-  **scene depth buffer**.
-- `:174-177` — `revert = base_depth < snapped_depth - tolerance`.
-- `:194` — the outline block runs `if (params.outline_enabled > 0.5 && !revert)`;
-  the focus tint has the same guard near `:290`.
+**Evidence.** `tests/verify/verify_outline3.gd`: noise floor 0 px; occluded rect
+**0 px**, exposed control **2130 px**. Capture matrix: `anchor` changed 0.20 %
+— the guard now working (the non-pixelized water edge and the fireflies keep
+their own pixels instead of terrain anchors smeared over them); inspected and
+accepted into the references.
 
-When the occluder spans the whole macro block, the anchor's screen position is
-*also* on the occluder, so both depth samples are the occluder's and `revert`
-stays `false`. The outline test then runs against the **metadata** texture, which
-the metadata camera rendered from the pixelized object behind it (`:195-199`),
-and inks the occluder.
+### 2. Unregistered custom materials were skipped with no diagnostic — **FIXED**
 
-**Evidence.** A subagent's per-36-row band profile of a frame with a magenta
-occluder quad covering the left half: in the bands fully covered by the quad the
-non-magenta pixel count equals the ink pixel count (i.e. those pixels *are* ink,
-not other scene), and a dumped frame shows the character's outline drawn on the
-quad. Independently, the shader reading above is unambiguous.
+`bind()` now reports one warning per node (node path, shader path, how to opt
+in: `register_pixelized_material()`, a shader bridge, or the ignore group). The
+dead `uses_unsupported_custom_material()` / `collect_materials()` were deleted.
 
-**Why the obvious fix fails — do not repeat it.** I tried gating on the anchor's
-own metadata depth (`anchor_meta.b`, the pixelized surface's view depth) instead
-of the depth-copy sample. That suppresses legitimate ink: on a block that
-straddles a silhouette the anchor often sits on the *far* surface, which by depth
-alone is indistinguishable from an occluder. The **capture matrix caught it** —
-`anchor` changed 0.41 % (mean 0.45, over the 0.2 tolerance) — and it was
-reverted. Treat the matrix as the guard against "fixing" this by removing ink.
+Wiring the hint exposed a real silent skip: the demo's
+`PixelizerPointLightVolume3D` registers its material deferred, after the
+applier's first bind, and nothing re-bound it. Registration now emits
+`PixelizerManager3D.pixelized_material_registered`, appliers with an unbound
+node re-scan, and the hint waits two frames and re-checks so this race is never
+reported. The demo logs no hint.
 
-**What a real fix needs.** A signal that separates "same object, different
-depth" from "foreign surface". Candidates, none validated:
-
-- Have the metadata pass record the pixelized layer's **tag at every pixel** of
-  the surface rather than only at survivors (today `ANCHOR_CLIP` limits the
-  metadata buffer to a lattice, so a fragment's own position is empty for
-  non-survivors — which is why a naive "sample the metadata at `uv`" test cannot
-  work).
-- A second render target holding the pixelized layer's depth (a "pixelized-only
-  depth"), so a fragment can be classified as "in front of the pixelized
-  surface" without relying on the screen-space neighbour.
-- A cheaper mitigation worth evaluating first: pass depth *and* the anchor's
-  metadata depth together and require *both* to indicate the fragment is nearer
-  **and** the block to be depth-continuous — i.e. exclude blocks whose own depth
-  spread already marks a silhouette.
-
-**Acceptance test.** With an occluder covering half the frame and a proven 0 px
-whole-frame noise floor: toggling the outline changes **0 px** in the occluded
-region while an exposed control region changes **>100 px**. `tests/verify/verify_outline3.gd`
-is the scaffold, but its exposed-rect control currently reports 0 px (see item 7)
-— fix the framing first or use the band-profile method described in `SUMMARY.md`.
-
-### 2. Unregistered custom materials are skipped with no diagnostic
-
-`core/pixelizer_geometry_state.gd:113-115` returns `false` from `bind()` when any
-slot holds a `ShaderMaterial` the pipeline cannot convert, leaving the whole node
-untouched — **silently**. The addon documents a "one-shot hint" in
-`addons/pixelizer_3d/AGENTS.md`, and
-`uses_unsupported_custom_material()` / `collect_materials()`
-(`core/pixelizer_geometry_state.gd:80`, `:90`) exist but have **no callers**, so
-the hint was never implemented. The only diagnostic lives in
-`core/pixelizer_material_factory.gd:40`, which is unreachable on this path.
-
-This was reported in the original audit but never made it into `PLAN.md`, so the
-executing session correctly did not implement it.
-
-**Fix.** Emit one warning per node naming the node path and the offending
-material's shader path, and say what to do (`register_pixelized_material()`,
-or bridge it). Either wire the dead helpers into that message or delete them.
-
-**Acceptance.** A node with an unregistered custom `ShaderMaterial` under an
-applier logs exactly one actionable line and is still left untouched.
+**Evidence.** `tests/unsupported_material_check.gd` (headless, 9 checks):
+exactly one hint across forced rescans, node and shader named, node untouched,
+and a late opt-in is bound and not reported.
 
 ---
 
-## Part 2 — Verification gaps (behaviour unproven; may hide defects)
+## Part 2 — Verification gaps
 
-Each of these is a place where the code looks right but nothing has demonstrated
-it in the running game. None is known to be broken.
+### 3. D1b, the crease term — **FIXED and verified**
 
-### 3. D1b, the crease term, is unverified
+**What was wrong.** Nothing in the addon asked the engine for the
+normal-roughness buffer; the pass only checked `has_texture()`. On 4.7.1
+Forward+ the texture is allocated in the demo even when nothing requests it,
+but nothing writes it. A temporary debug view that blits the raw buffer showed
+the unforced contents are uninitialised memory: dark blocky rectangles with no
+scene structure. The crease term was inking garbage — the earlier "12 434 px
+changed" was real pixels changing for a meaningless reason, and the ~20 000 px
+gap to the forced render was garbage vs real normals. (With a forcing material
+the depth prepass writes the buffer, and the same blit shows the scene's
+normals, written only at the anchor-lattice survivors since the main pass
+discards the rest — exactly where the term samples.)
 
-`outline_normal_threshold` (default 0 = off) samples the engine's
-normal-roughness buffer. It was observed to change the render with SSAO on in one
-run (threshold 0 vs 0.6, with a **0 px** whole-frame noise floor) and to change
-nothing in another run — inconsistent, so treat it as unverified.
+**Fix.** The manager sets `CompositorEffect.needs_normal_roughness` on the apply
+effect while `outline_normal_threshold > 0` (off otherwise, so the default demo
+pays nothing). The warning now only fires on renderers without the buffer.
 
-**Decisive test** (suggested by the audit and not yet run): put a small mesh in
-frame with `uniform sampler2D nr : hint_normal_roughness_texture;`. That both
-*forces* the engine to create the buffer and acts as a positive control: with the
-buffer present, threshold 0 vs 0.6 must change **more than the noise floor**.
-Prove the noise floor is 0 px first (see Part 3).
+**Evidence.** `verify_outline3.gd` (12 checks, all pass): threshold 0 vs 0.6
+changes 12 485 px with and without a `hint_normal_roughness_texture` forcing
+quad, and the two renders differ only by the forcer quad's own 560 px — now
+asserted. The capture matrix is unchanged (the term is off by default).
 
-### 4. B1's repaired branch is exercised only by reasoning
+### 4. B1's repaired branch — **COVERED**
 
-The B1 fix arms the bridge watchdog when a bind **succeeds and swapped**
-(`nodes/pixelizer_applier_3d.gd:374-384`). In the demo the chunks are mesh-less
-at first bind, so the watchdog is armed by the *older* failed-bind path instead;
-a frame-by-frame trace confirmed the first `bind()` never succeeded. The
-documented contract is satisfied, but the specific new branch has no coverage.
+`tests/bridge_watchdog_check.gd` (headless, 6 checks): bridged material present
+at first bind → bind succeeds, swaps and arms the watchdog; the mesh is then
+replaced with a fresh `mst_terrain_baked` material and the watchdog bridges it
+without a rescan. Negative control: with the watch entry removed, the
+replacement stays unbridged.
 
-**Test to write.** A scene where the target material exists at first bind and is
-replaced afterwards (MST's runtime texture baker does this, an
-`editor_preview` pass does this, and a synthetic "swap the mesh material after
-bind" probe would do it). Assert the new shader is bridged without a rescan.
+### 5. Palette LUT path — **COVERED (regression); fidelity gap unchanged**
 
-### 5. The palette LUT path has no in-game coverage
+Matrix entry `palette_lut` bakes an 8-colour LUT at runtime through `PaletteLUT`
+and assigns it as `settings.global_palette_lut`; the render differs from
+`anchor` (1.13 %, the characters are graded) and is byte-stable. "Lands on
+palette entries" cannot be asserted on final pixels: the LUT grades albedo and
+lighting acts on top (`pixelizer_object.gdshader:32`). The bridged MST terrain
+is not graded in this capture.
 
-The demo assigns no `global_palette_lut`, so bake → global uniform → grade has
-never been exercised in the running game; C2's fix (the dither matrix values) is
-covered numerically by `tests/dither_matrix_check.gd` plus the shader/matrix
-agreement. A probe could author a small LUT at runtime via `PaletteLUT` and
-assert the render changes and lands on palette entries. Note the known fidelity
-gap: the LUT grades **albedo**, so lighting and cloud shadows act on top of the
-graded colour (`pixelizer_object.gdshader:32`); the README says so.
+### 6. `verify_core.gd` F1 — **FIXED (probe and demo)**
 
-### 6. `tests/verify/verify_core.gd`'s F1 checks are unsound as written
+The terrain did not inherit either: its applier is nested in the top-level
+applier, which pinned `pixel_size = 5`, so *nothing* in the demo followed the
+settings default (this file's earlier note that the tuner moved the terrain was
+wrong). The pin equalled the default, so it was removed (render unchanged) and
+the tuner row now moves the whole scene. F1 asserts an inheriting subject
+(`Knight_Body` follows a live change and a resource swap) and a pinned one (the
+probe pins the terrain applier at 4; its chunks must not follow). 27 checks
+pass.
 
-They fail because `demo/demo.tscn` pins `pixel_size = 5` on the top-level applier
-and `_resolve_setting()` is nearest-author-wins, so a
-`settings.default_pixel_size` change cannot reach `Knight_Body`. Propagation
-itself works — a counter-test on an inheriting subtree shows the live write and a
-whole-resource swap both landing one frame later with `rescan_interval = 0`.
-**Retarget the checks at an inheriting mesh, or rewrite the claim.**
+### 7. `verify_outline3.gd`'s exposed control reported 0 px — **NOT REPRODUCIBLE**
 
-Related, and not a bug: in the demo the tuner's Look → Pixelization → default
-pixel size moves the terrain (which inherits) and not the characters (pinned).
-Worth deciding whether the demo should pin at all, since the tuner row is
-otherwise a poor demonstration.
+The committed probe's control inks 2130 px. The probe's own comments record an
+earlier version that never switched outlines off, which produces exactly this
+symptom; that is the likely cause. Its TRUST header is updated.
 
-### 7. `verify_outline3.gd`'s exposed-rect control reports 0 px — unexplained
+### 8. Assigning an outline palette shifted the frame — **FIXED (two causes)**
 
-With a correct framing (subject projected to 576,425; the occluder's edge at
-576; both rects straddling it; guards passing) toggling
-`settings.default_outline_enabled` changed **0 px in the whole frame**. That is
-not explicable by the code: `compositor/pixelizer_apply_effect.gd:142` pushes
-`params.outline_enabled` straight from `look.default_outline_enabled`, the demo
-pins nothing that would suppress the characters' outlines, and the *applier-level*
-toggle demonstrably inks (item D1a's control box: 1160 px). Either the framing
-still fails to include inked geometry, or something suppresses the pass-level
-toggle. **Resolve this before trusting any D3 result from that probe** — note it
-does *not* affect the D3 defect in Part 1, whose evidence is the shader reading
-plus the audit's independent band profile.
+The measurable shift came from multiply mode ignoring the row opacity: hidden
+tags (the terrain) carry an opacity-0 *white* row, which `color *= rgb * 2`
+doubled. Separately, `invalidate()` did drop per-tag state until the appliers'
+deferred re-scan; the registry now keeps per-tag enable/colour state across a
+reseed (decision: a palette swap preserves it). With rows at 0.5 the frame is
+now byte-identical to outlines off.
 
-### 8. Assigning an outline palette shifts the frame even when it should not
+### 9. Foliage shaders — **DECIDED: documented as unexercised examples**
 
-Assigning *any* `settings.outline_palette` moved the frame by ~0.5 % mean luma
-even for a palette whose row values should be neutral. The audit's candidate
-cause: `core/pixelizer_outline_registry.gd:71-75` `invalidate()` drops the
-working copy, which also drops the per-tag `set_enabled(false)` writes (the
-terrain applier's disabled tag) until the next rescan re-applies them. Confirm,
-then decide whether an authored-palette swap should preserve per-tag enable
-state.
+Recorded in `AGENTS.md` (Foliage contract). Not wired into the demo.
 
-### 9. The foliage shaders are unwired, so two fixes are unexercised
+### 10. Mover snap visual coverage — **COVERED**
 
-`tree_leaves.gdshader` and `grass_billboard.gdshader` are referenced by no
-script, scene or resource. That leaves untested: the `ANCHOR_CLIP_AT(alpha, 0.5)`
-minimum scissor that stops cutout cards rendering as opaque quads, and the
-cross-product billboard basis that replaced a `normalize(0,0,0)` NaN at the
-pitch singularity. Decide: wire them into the demo (a small foliage patch), or
-document them in `AGENTS.md` as unexercised examples.
+Matrix entry `ortho_mover` (`--ortho --mover-snap`, 57 movers). `mover_count`
+used to read 0 for an unrelated reason as well: the capture helper collected
+meshes by *script* class name, which plain meshes lack. Fixed; the runner now
+requires `mover_count > 0` for this entry.
 
-### 10. Mover snap still has no visual coverage
+### 11. Dense outline matrix entry — **ADDED**
 
-`tests/mover_snap_check.gd` pins the registration contract (8 checks), but the
-capture matrix reports `mover_count: 0` on every entry because the demo's camera
-is perspective and mover snap is orthographic-only. A matrix entry that switches
-the camera to orthographic and sets `mover_snap = 1` would cover the actual
-vertex-stage snap.
-
-### 11. A matrix entry that exercises the outline path harder
-
-The `anchor` entry does cover the outline pass (it is what caught my bad gate
-change), but nothing frames a *dense* outline case — e.g. the terrain applier
-with `outline_enabled = 1`, which is the configuration the D-series work exists
-for. A sixth matrix entry would make outline regressions loud rather than 0.4 %.
+`outline_dense` (`--outline-terrain`: every applier outlined, terrain
+included), 2.65 % different from `anchor`.
 
 ---
 
 ## Part 3 — How to verify anything in this project in-game
 
 These four traps each cost a session and each produced a plausible-looking wrong
-number. Full write-up in `SUMMARY.md` → "Method notes".
+number. Full write-up in `SUMMARY.md` → "Method notes". (The fourth session hit
+trap 4 once more: a "forcing" quad placed just outside the frustum made a
+comparison vacuous until the probe asserted its pixel count was nonzero.)
 
 1. **`root.get_texture().get_image()` returns the last RENDERED frame.** Two
    grabs inside one `_process` call are the same image; mutating state and
@@ -236,7 +174,8 @@ number. Full write-up in `SUMMARY.md` → "Method notes".
    screen, assert the noise floor is 0).
 
 **Running the probes.** Windowed, never `--headless` (there is no renderer, so
-the manager disables its compositor passes and pixelization is unobservable):
+the manager disables its compositor passes and pixelization is unobservable).
+The headless unit checks are listed in `tests/README.md`.
 
 ```bash
 "C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --path . \
@@ -251,7 +190,12 @@ baked at import) or a stale cache silently runs the old shader:
 "C:/Users/Clinton/g/Godot/Godot-stable_mono_win64_console.exe" --headless --editor --quit --path .
 ```
 
-**The regression net.** `python tests/run_captures.py` renders five modes and
+**Seeing shader values.** A temporary debug view (an extra `debug_mode` branch
+in `apply_pixelization.glsl`, captured with `--debug-view=N`) that encodes a
+ratio into a colour channel is what exposed the depth bug; decode the PNG with
+the sRGB EOTF before reading numbers off it.
+
+**The regression net.** `python tests/run_captures.py` renders eight modes and
 diffs against `tests/reference/`. It is the cheapest way to prove a change did
 **not** alter the demo's render, and it is what caught the failed D3 gate fix.
 Its references are regenerated by the same build, so a pass proves determinism,
@@ -260,46 +204,73 @@ not correctness (see `tests/README.md`). After an *intentional* visual change:
 
 ---
 
-## Part 4 — Decisions for the owner (no code needed until decided)
+## Part 4 — Owner decisions
 
-1. **Multiply-mode semantics.** The apply pass does
-   `color *= srgb_to_linear(row) * 2`, so the invisible row is
-   `linear_to_srgb(0.5) ≈ 0.7354`, not 0.5. The docs now say so. The alternative
-   is to drop the sRGB decode *in multiply mode only* (the row value is a
-   modulation factor, not a colour), which restores the documented "0.5 is
-   invisible" and matches ProPixelizer. The demo uses neither mode, so either is
-   free.
+1. **Multiply-mode semantics.** The apply pass did
+   `color *= srgb_to_linear(row) * 2`, so the invisible row was
+   `linear_to_srgb(0.5) ≈ 0.7354`, not 0.5.
+
+   Owner Decision: match ProPixelizer. **Done** — multiply uses the authored
+   value as the factor (no sRGB decode), with one addition: the row opacity
+   still applies (`mix(color, color * rgb * 2, alpha)`), because the manager
+   hides a tag by writing an opacity-0 *white* row, which a bare
+   `color *= rgb * 2` doubles.
+
 2. **Split-screen / simultaneous cameras.** Still unsupported: four parameters
    (`pixelizer_meta_bit`, `pixelizer_screen_size`, `pixelizer_lowres_mode`, the
    palette LUT/dither pair) are **process-wide** global shader uniforms, and F5
    only warns. Moving them to per-material parameters is the prerequisite
    project. Per-camera *switching* works today (F3 verified).
-3. **The demo camera.** Authored as a near-vertical overhead rig
-   (`orbit_distance = 24`, `pitch_deg = 89.9`, `pitch_max_deg = 89.9`), which
-   `AGENTS.md` now records. Confirm it is intentional or restore a gameplay
-   framing (a one-line change plus a `docs/images/hero.png` re-shoot).
-4. **MST interactions.** Explicitly out of scope per the owner. Still open, for
-   whoever takes it: whether the bridged MST surface shaders' `ALPHA` writes put
-   them in the transparent pipeline (the addon's own invariant forbids writing
-   `ALPHA`), the grass bridge injection point sampling the pre-billboard
-   `VERTEX`, and one vendored file differing from upstream
+
+   Owner Decision: Deferred. **Documented** in `AGENTS.md` (Load-bearing
+   invariants → camera auto-follow).
+
+3. **The demo camera.** A near-vertical overhead rig (`orbit_distance = 24`,
+   `pitch_deg = 89.9`, `pitch_max_deg = 89.9`), recorded in `AGENTS.md`.
+
+   Owner Decision: Intentional.
+
+4. **MST interactions.** Still open, for whoever takes it: whether the bridged
+   MST surface shaders' `ALPHA` writes put them in the transparent pipeline, the
+   grass bridge injection point sampling the pre-billboard `VERTEX`, and one
+   vendored file differing from upstream
    (`resources/plugin_materials/round_brush_radius_material.tres`).
+
+   Owner Decision: Out of scope.
+
 5. **`docs/references/`** (videos + `model.txt`) is untracked; `*.mp4`/`*.webm`/
-   `*.mkv` are now ignored, so only `model.txt` is exposed to a stray
-   `git add -A`.
-6. **README screenshots.** The three editor screenshots were removed (they were
-   missing and stale); `hero.png`, `demo-terrain.png`, `demo-diagnostics.png`
-   and `demo-inspector.png` are current. Re-shoot editor shots if wanted.
+   `*.mkv` are ignored, so only `model.txt` is exposed to a stray `git add -A`.
+
+   Owner Decision: Intentional.
+
+6. **README screenshots.** The three editor screenshots were removed;
+   `hero.png`, `demo-terrain.png`, `demo-diagnostics.png` and
+   `demo-inspector.png` are current.
+
+   Owner Decision: Don't re-shoot editor shots.
 
 ---
 
 ## Part 5 — Small hygiene items
 
-- `demo/demo.gd.uid` points at a script that does not exist (pre-existing).
-- `tests/__pycache__/` could not be deleted (a safety check blocked the glob);
-  it is gitignored.
-- `tests/bridge/generate_bridges.gd` re-stamps the manifest's `.tres` uid
-  attributes textually because the headless `ResourceSaver` drops them — a
-  workaround worth confirming is robust, and worth mirroring in the dock if not.
-- `SUMMARY.md` and `PLAN.md` are process records, not contracts. When a claim in
-  them is superseded, correct it there rather than leaving both versions.
+- **uid re-stamp — FIXED.** Confirmed the drop: in a `--script` run
+  `ResourceUID` knows the manifest's and its scripts' UIDs, yet
+  `ResourceSaver.save()` writes no `uid=` at all (the text saver asks an
+  editor-installed hook for them). The old workaround copied UIDs from the
+  previous file's *text*, so a first-time file got no header uid and a stale
+  uid would be copied forward. Replaced by `PixelizerBridgeManifest.save_to()`:
+  the header keeps the file's uid from `ResourceLoader.get_resource_uid()` (a
+  fresh file gets `ResourceUID.create_id()`) applied with
+  `ResourceSaver.set_uid()`, and each `ext_resource` gets the engine's live uid.
+  The generator and the dock both use it (in the editor it is a no-op, since
+  the saver already writes them). Evidence: new `bridge_fixtures.gd` checks (84
+  pass) — a fresh header uid, stable across a re-save, every `ext_resource` uid
+  equal to the engine's, plus an info line showing a bare save writes none; and
+  `generate_bridges.gd` regenerates the production manifest byte-identical to
+  HEAD.
+- `SUMMARY.md` and `PLAN.md` are process records, not contracts. **Done for this
+  session's supersessions** (D1b, D2, D3, F1, multiply mode) in `SUMMARY.md`;
+  `PLAN.md` is left as the original spec.
+- `docs/images/*.png` were not re-shot. The depth fix changes ~0.2 % of an
+  overhead frame (water edge, fireflies); re-shoot through the capture CLI if
+  they should match exactly.

@@ -188,7 +188,7 @@ func _save_manifest() -> void:
 	manifest.roots = _collect_roots_from_ui()
 	manifest.output_dir = _output_dir_from_ui()
 	DirAccess.make_dir_recursive_absolute(manifest_path.get_base_dir())
-	var error := ResourceSaver.save(manifest, manifest_path)
+	var error := manifest.save_to(manifest_path)
 	if error != OK:
 		_set_status("Failed to save manifest (%d): %s" % [error, manifest_path])
 

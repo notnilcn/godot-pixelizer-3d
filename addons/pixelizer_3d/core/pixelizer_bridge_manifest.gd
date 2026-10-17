@@ -23,6 +23,68 @@ const FILE_NAME := "pixelizer_bridge_manifest.tres"
 @export var entries: Array[PixelizerBridgeEntry] = []
 
 
+## Save this manifest to `path`, keeping its UIDs. Use this instead of a bare
+## `ResourceSaver.save()` (the dock and `tests/bridge/generate_bridges.gd` both
+## do).
+##
+## The text saver asks an editor-installed hook for UIDs, so outside the editor
+## (a `--headless --script` run) it writes the header and every `ext_resource`
+## WITHOUT `uid=` even though `ResourceUID` knows them all — and `demo.tscn`
+## references the production manifest by uid. The UIDs therefore come from the
+## engine, never from the previous file text: the header keeps the uid the file
+## already had (a fresh file gets a new one) and is set through
+## `ResourceSaver.set_uid()`; each `ext_resource` gets the uid
+## `ResourceLoader.get_resource_uid()` reports for its path. Inside the editor
+## the saver already writes them and this pass changes nothing.
+func save_to(path: String) -> Error:
+	var uid := ResourceLoader.get_resource_uid(path) if FileAccess.file_exists(path) else ResourceUID.INVALID_ID
+	if uid == ResourceUID.INVALID_ID:
+		uid = ResourceUID.create_id()
+	var error := ResourceSaver.save(self, path)
+	if error != OK:
+		return error
+	error = ResourceSaver.set_uid(path, uid)
+	if error != OK:
+		return error
+	if ResourceUID.has_id(uid):
+		ResourceUID.set_id(uid, path)
+	else:
+		ResourceUID.add_id(uid, path)
+	return _stamp_ext_resource_uids(path)
+
+
+## Add the engine's uid to every `[ext_resource ...]` line that lacks one, in the
+## position the editor writes it (`type=... uid=... path=... id=...`). Lines the
+## engine has no uid for are left path-only, which loads the same.
+static func _stamp_ext_resource_uids(path: String) -> Error:
+	var text := FileAccess.get_file_as_string(path)
+	if text.is_empty():
+		return ERR_FILE_CANT_READ
+	var lines := text.split("\n")
+	var changed := false
+	var path_attr := RegEx.create_from_string(" path=\"([^\"]*)\"")
+	for i in lines.size():
+		var line := lines[i]
+		if not line.begins_with("[ext_resource ") or line.contains(" uid=\""):
+			continue
+		var found := path_attr.search(line)
+		if found == null:
+			continue
+		var uid := ResourceLoader.get_resource_uid(found.get_string(1))
+		if uid == ResourceUID.INVALID_ID:
+			continue
+		lines[i] = line.replace(found.get_string(0), " uid=\"%s\"%s" % [ResourceUID.id_to_text(uid), found.get_string(0)])
+		changed = true
+	if not changed:
+		return OK
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return FileAccess.get_open_error()
+	file.store_string("\n".join(lines))
+	file.close()
+	return OK
+
+
 ## The entry for `source_path`, or null.
 func find_entry(source_path: String) -> PixelizerBridgeEntry:
 	for entry in entries:

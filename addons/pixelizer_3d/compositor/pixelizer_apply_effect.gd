@@ -10,9 +10,11 @@ const CONTEXT := &"pixelizer"
 const COPY_TEXTURE := &"color_copy"
 const DEPTH_COPY_TEXTURE := &"depth_copy"
 ## The engine's normal-roughness target, a named scene-buffer texture (Forward+
-## registers it as `forward_clustered / normal_roughness`). Present only when
-## the renderer generated it (SSAO/SSIL/SSR, or a material sampling
-## `hint_normal_roughness_texture`); otherwise the crease term is skipped.
+## registers it as `forward_clustered / normal_roughness`). The manager sets
+## `needs_normal_roughness` while `outline_normal_threshold > 0`, which makes the depth
+## prepass write it; `has_texture()` alone proves only that it is allocated (an
+## unrequested buffer can exist with uninitialised contents). Missing (e.g. a
+## non-Forward+ renderer) = the crease term is skipped.
 const NR_SCOPE := &"forward_clustered"
 const NR_TEXTURE := &"normal_roughness"
 
@@ -97,7 +99,7 @@ func _render_callback(p_callback_type: int, p_render_data: RenderData) -> void:
 			normal_threshold = 0.0
 			if not _normal_warned:
 				_normal_warned = true
-				push_warning("Pixelizer3D: outline_normal_threshold is set but the engine's normal-roughness buffer is not available; enable SSAO/SSIL/SSR (or a material sampling `hint_normal_roughness_texture`) for the crease term. It stays off until then.")
+				push_warning("Pixelizer3D: outline_normal_threshold is set but the engine's normal-roughness buffer is not available (the crease term needs the Forward+ renderer). It stays off until then.")
 
 	# Framebuffer format is derived from the engine textures themselves (the
 	# RenderSceneBuffers format descriptions can disagree with the actual RIDs).
@@ -134,8 +136,12 @@ func _render_callback(p_callback_type: int, p_render_data: RenderData) -> void:
 	var push := PackedFloat32Array([
 		float(size.x),
 		float(size.y),
-		projection.get_z_near(),
-		projection.get_z_far(),
+		# The two depth terms of the projection the engine renders with. It is
+		# reverse-Z with a [0, 1] depth range, so `get_z_near()` / `get_z_far()`
+		# (which assume the OpenGL convention) return nonsense (about -0.05 /
+		# 0.05); the shader linearises from these terms directly.
+		projection.z.z,
+		projection.w.z,
 		is_ortho,
 		float(manager.debug_view),
 		1.0 if look.depth_occlusion else 0.0,

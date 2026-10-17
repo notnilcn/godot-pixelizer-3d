@@ -6,8 +6,8 @@ extends RefCounted
 ##
 ## All four supported node types are handled through one `_material_slots()`
 ## iterator that yields a `Slot` (`source` + `apply`/`restore` callables) for
-## every authored material slot; `bind`, `unbind`, `collect_materials`, the
-## unsupported-material check and the bridge all iterate that one list.
+## every authored material slot; `bind`, `unbind`, the unsupported-material
+## check and the bridge all iterate that one list.
 
 ## One authored material slot on the target: the source material and the calls
 ## that swap in / restore the converted material for that slot.
@@ -51,6 +51,11 @@ var _bridge_swapped := false
 var _size_clamped := false
 var _tag_clamped := false
 
+## Instance ids of targets already warned about an unsupported custom material.
+## Static (not per state) because `bind()` is retried by rescans and the bridge
+## watchdog, and a state can be rebuilt for the same node: one line per node.
+static var _unsupported_warned: Dictionary = {}
+
 ## Largest macro-pixel size the apply pass can search (mirrors `MAX_ANCHOR_SIZE`
 ## in apply_pixelization.glsl; the search covers the lower-left quadrant only).
 const MAX_ANCHOR_SIZE := 5
@@ -82,25 +87,6 @@ func has_no_materials() -> bool:
 	return _material_slots().is_empty()
 
 
-## Every authored material on `target` (override first, then surface materials,
-## or the MultiMesh / particle draw-pass mesh materials).
-func collect_materials() -> Array:
-	var out: Array = []
-	for slot in _material_slots():
-		out.append(slot.source)
-	return out
-
-
-## True when any current material is an unregistered custom shader. The whole
-## node is then left untouched so the authored colours survive and the metadata
-## camera is not polluted with un-encoded colours.
-func uses_unsupported_custom_material() -> bool:
-	for slot in _material_slots():
-		if _is_unsupported_custom_material(slot.source):
-			return true
-	return false
-
-
 ## Apply this state: metadata layer, shadow setting, material conversion,
 ## instance uniforms and the bridge lookup. Returns false (leaving the node
 ## untouched) when there is nothing to inspect or an unapproved custom material is
@@ -121,12 +107,14 @@ func bind(manager: PixelizerManager3D) -> bool:
 	# as supported — the lookup below converts it.
 	for slot in slots:
 		if _is_unsupported_custom_material(slot.source) and not _bridge_available(slot.source):
+			_warn_unsupported(slot.source)
 			return false
 	# Manifest lookup: approved bridges swap shaders into the authored materials
 	# in place so they become recognized/convertible at runtime.
 	refresh_bridge(manager_ref)
 	for slot in slots:
 		if _is_unsupported_custom_material(slot.source):
+			_warn_unsupported(slot.source)
 			return false
 	var factory := manager_ref.get_material_factory()
 	_original_layers = target.layers
@@ -367,6 +355,31 @@ func _apply_shadow_setting() -> void:
 
 ## True for custom ShaderMaterials that never opted into the anchor pipeline via
 ## manager.register_pixelized_material(). Null and BaseMaterial3D are convertible.
+## The one-shot hint for a node left untouched because a slot holds a custom
+## ShaderMaterial the pipeline cannot convert (the factory's own warning is never
+## reached on this path: `bind()` bails before converting anything). Waits two
+## frames and re-checks first: effect nodes register their material deferred,
+## after the applier's first bind attempt, and the registration re-scan then
+## binds them — only a skip that persists is reported.
+func _warn_unsupported(material: Material) -> void:
+	var id := target.get_instance_id()
+	if _unsupported_warned.has(id):
+		return
+	_unsupported_warned[id] = true
+	if target.is_inside_tree():
+		var tree := target.get_tree()
+		await tree.process_frame
+		await tree.process_frame
+	if _applied or not is_instance_valid(target) or not is_instance_valid(material) 			or not _is_unsupported_custom_material(material):
+		_unsupported_warned.erase(id)
+		return
+	var shader: Shader = (material as ShaderMaterial).shader
+	var shader_path := shader.resource_path if shader != null and shader.resource_path != "" else "<built-in shader>"
+	var node_path := str(target.get_path()) if target.is_inside_tree() else str(target.name)
+	push_warning("Pixelizer3D: '%s' was left unpixelized: its custom ShaderMaterial (shader %s) is not a pixelizer material. Include anchor_macros.gdshaderinc and call manager.register_pixelized_material(material), or approve a shader bridge for it (Project > Tools > Pixelizer3D Shader Bridge, then manager.bridge_manifests + auto_bridge_custom_shaders); add the node to the applier's ignore group to silence this." % [
+		node_path, shader_path])
+
+
 func _is_unsupported_custom_material(material: Material) -> bool:
 	if material == null:
 		return false

@@ -173,6 +173,11 @@ static var _multi_manager_warned := false
 ## re-read. The manager itself re-publishes the pipeline globals.
 signal settings_changed
 
+## Emitted when a custom material opts in through `register_pixelized_material()`.
+## Appliers re-scan, so a node whose first bind ran before the (usually
+## deferred) registration is bound instead of staying skipped.
+signal pixelized_material_registered(material: ShaderMaterial)
+
 
 ## Register the pipeline-wide globals before any material specializes: a shader
 ## that declares a global registered later warns "removed at some point". The
@@ -245,7 +250,18 @@ func _on_settings_changed() -> void:
 	_palette_dirty = false
 	if _outlines != null:
 		_outlines.invalidate()
+	_sync_normal_request()
 	settings_changed.emit()
+
+
+## The crease term reads the engine's normal-roughness buffer. Request it from
+## the depth prepass (`CompositorEffect.needs_normal_roughness`) exactly while the term is
+## on: without the request Forward+ may still have the texture allocated but
+## never writes it (measured 2026-10-16: uninitialised contents), and with it
+## always on every frame pays for the normal write.
+func _sync_normal_request() -> void:
+	if _apply_effect != null:
+		_apply_effect.needs_normal_roughness = get_settings().outline_normal_threshold > 0.0
 
 
 func _ready() -> void:
@@ -546,6 +562,7 @@ func _ensure_compositor() -> void:
 	_apply_effect = PixelizerApplyPixelizationEffect.new()
 	_snapshot_effect.manager = self
 	_apply_effect.manager = self
+	_sync_normal_request()
 
 	_compositor = Compositor.new()
 	_compositor.compositor_effects = [_snapshot_effect, _apply_effect]
@@ -645,8 +662,11 @@ func register_pixelized_material(material) -> bool:
 	if not (material is ShaderMaterial):
 		return false
 	var shader_material := material as ShaderMaterial
+	var was_registered := shader_material.has_meta(&"pixelizer_opt_in")
 	shader_material.set_meta(&"pixelizer_opt_in", true)
 	_clouds.register_material(shader_material)
+	if not was_registered:
+		pixelized_material_registered.emit(shader_material)
 	return true
 
 
@@ -716,9 +736,9 @@ func get_outline_texture() -> ImageTexture:
 
 
 ## True when the working outline palette composites as a modulation
-## (`color *= srgb_to_linear(palette_rgb) * 2`, so the invisible row is ~0.735,
-## not 0.5) instead of replacing the scene
-## colour at the row's alpha. Set on the authored palette.
+## (`color *= palette_rgb * 2`, the authored value used as the factor, so the
+## invisible row is 0.5) instead of replacing the scene colour at the row's
+## alpha. Set on the authored palette.
 func get_outline_multiply_mode() -> bool:
 	return _outlines.is_multiply()
 

@@ -76,71 +76,12 @@ func _generate_into(out_dir: String, manifest_name: String) -> int:
 		entry.generated_hash = PixelizerShaderBridge.hash_text(String(result["code"]))
 		entry.rules_version = PixelizerBridgeRegistry.INJECTION_RULES_VERSION
 		print("WROTE %s%s" % [path, "" if existed else " (new entry, approved)"])
-	var previous := FileAccess.get_file_as_string(manifest_path)
-	var error := ResourceSaver.save(manifest, manifest_path)
-	if error == OK and not previous.is_empty():
-		_restore_uids(manifest_path, previous)
+	# `save_to()` keeps the manifest's UIDs, which a bare ResourceSaver.save()
+	# drops in a `--script` run (`demo.tscn` references the manifest by uid).
+	var error := manifest.save_to(manifest_path)
 	print("MANIFEST %s (%d entries, %d new, %d left unapproved) err=%d" % [
 		manifest_path, manifest.entries.size(), added, unapproved, error])
 	return failed
-
-
-## `ResourceSaver` under a plain `--script` run rewrites a `.tres` header without
-## its `uid=` attributes (the editor keeps them), and `demo.tscn` references the
-## production manifest by uid. Re-stamp the attributes recorded in the previous
-## file text so a generator run is byte-stable and never invalidates an existing
-## reference.
-func _restore_uids(path: String, previous: String) -> void:
-	var saved := FileAccess.get_file_as_string(path)
-	if saved.is_empty():
-		return
-	var uids := _collect_uids(previous)
-	if uids.is_empty():
-		return
-	var out := PackedStringArray()
-	for line in saved.split("\n"):
-		var stripped := line.strip_edges()
-		if stripped.begins_with("[gd_resource") and not stripped.contains("uid=") and uids.has(""):
-			out.append(line.substr(0, line.rfind("]")) + " uid=\"%s\"]" % uids[""])
-			continue
-		if stripped.begins_with("[ext_resource") and not stripped.contains("uid="):
-			var res_path := _attr(stripped, "path")
-			if uids.has(res_path):
-				out.append(line.replace(" path=\"", " uid=\"%s\" path=\"" % uids[res_path]))
-				continue
-		out.append(line)
-	var restamped := "\n".join(out)
-	if restamped == saved:
-		return
-	var file := FileAccess.open(path, FileAccess.WRITE)
-	if file != null:
-		file.store_string(restamped)
-		file.close()
-
-
-## Map of `path` attribute -> `uid` attribute for every line carrying a uid; the
-## bare `[gd_resource]` header uses the empty-string key.
-func _collect_uids(text: String) -> Dictionary:
-	var uids := {}
-	for line in text.split("\n"):
-		var stripped := line.strip_edges()
-		if not stripped.begins_with("["):
-			continue
-		var uid := _attr(stripped, "uid")
-		if uid.is_empty():
-			continue
-		uids[_attr(stripped, "path")] = uid
-	return uids
-
-
-## Value of `name="value"` on a .tres line, or "".
-func _attr(line: String, name: String) -> String:
-	var key := name + "=\""
-	var start := line.find(key)
-	if start < 0:
-		return ""
-	var end := line.find("\"", start + key.length())
-	return "" if end < 0 else line.substr(start + key.length(), end - start - key.length())
 
 
 func _load_manifest(path: String) -> PixelizerBridgeManifest:

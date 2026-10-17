@@ -42,9 +42,13 @@ The demo and the addon implement no custom CLI flags beyond the capture CLI
 (`demo/capture.gd`, driven by `tests/run_captures.py`; see "Captures" below).
 `tests/` holds the bridge
 fixtures (`tests/bridge/`), the dither/palette unit tools
-(`tests/dither_matrix_check.gd`, `tests/bake_palette_lut_debug.gd`), the capture
-matrix (`tests/run_captures.py` + `tests/reference/`) and a standalone PNG diff
-tool (`tests/compare_captures.py`); `tests/captures/` is the designated output
+(`tests/dither_matrix_check.gd`, `tests/bake_palette_lut_debug.gd`), headless
+unit checks (`tests/mover_snap_check.gd`, `tests/unsupported_material_check.gd`,
+`tests/bridge_watchdog_check.gd`; `--headless --path . --fixed-fps 60 --script
+res://tests/<name>.gd`, exit 0 = pass), the in-game probes (`tests/verify/`,
+windowed; see `VERIFICATION.md` Part 3), the capture matrix
+(`tests/run_captures.py` + `tests/reference/`) and a standalone PNG diff tool
+(`tests/compare_captures.py`); `tests/captures/` is the designated output
 directory for captures.
 
 ## Captures
@@ -52,7 +56,13 @@ directory for captures.
 `tests/run_captures.py` drives `demo/demo.tscn` through the small capture CLI in
 `demo/capture.gd` (`--capture=<path>`, `--resolution=WxH`, `--fixed-view=<name>`,
 `--mode=anchor|lowres`, `--plain`, `--debug-view=N`, `--pixel-size=N`,
-`--no-overlay`, `--overlay`, `--settle=<frames>`; flags go after a bare `--`).
+`--no-overlay`, `--overlay`, `--settle=<frames>`, `--outline-terrain`,
+`--ortho`, `--mover-snap`, `--palette-lut`; flags go after a bare `--`). The
+matrix has eight entries: `anchor`, `debug_anchor_map`, `lowres`, `plain`,
+`pixel_size_3`, `outline_dense` (every applier outlined, terrain included),
+`ortho_mover` (orthographic camera + mover snap — the only entry where the
+vertex-stage snap runs) and `palette_lut` (a runtime-baked LUT through the
+global uniform and `ANCHOR_GRADE`).
 Each run prints one `PIXELIZER_CAPTURE {json}` diagnostics line, and the runner
 fails the entry if a requested flag is not reflected there. With `--fixed-fps 60`
 and the helper's pinned god-ray phase the demo is deterministic frame-by-frame,
@@ -87,6 +97,10 @@ diagnostics shot).
   swapped for generated bridge shaders at runtime. `res://pixelizer_bridges/`
   is generated output — rebuild it from the bridge dock, **not**
   `generate_bridges.gd` (see step 4 above).
+- No applier pins `pixel_size` (the top-level pin, equal to the settings
+  default, was removed 2026-10-16), so every subtree follows
+  `settings.default_pixel_size` and the tuner's Look → default pixel size row
+  moves the whole scene.
 - Nested terrain applier: inherits the settings default `pixel_size = 5`,
   `anchor_mode = 1` (UNIFIED), `outline_enabled = 0`. UNIFIED is load-bearing:
   the chunk meshes + grass share one world-origin macro lattice, otherwise the
@@ -123,7 +137,8 @@ diagnostics shot).
   keys), which the runtime registration leaves alone.
 - Capture CLI (see "Captures" below): `--capture=<res://path>`,
   `--resolution=WxH`, `--fixed-view=<name>`, `--plain`, `--debug-view=N`,
-  `--no-overlay`; a diagnostics JSON line goes to stdout so a silently ignored
+  `--no-overlay`, `--outline-terrain`, `--ortho`, `--mover-snap`,
+  `--palette-lut`; a diagnostics JSON line goes to stdout so a silently ignored
   flag fails a capture run.
 - `capture.png`, `capture_metadata.png`, `palette_lut_debug.png` at the repo
   root are generated artifacts and are **tracked**, not gitignored.
@@ -182,7 +197,11 @@ new effect types need no manager change):
 - `register_cloud_material(material)` / `unregister_cloud_material(material)` —
   consumers that only receive cloud uniforms (water, terrain, deck).
 - `register_pixelized_material(material)` / `unregister_pixelized_material(material)`
-  — custom spatial materials that include `anchor_macros.gdshaderinc`.
+  — custom spatial materials that include `anchor_macros.gdshaderinc`. A first
+  registration emits `pixelized_material_registered`; appliers with an unbound
+  node re-scan, so a node whose material opts in late (every effect node
+  registers deferred, after the applier's first bind) is bound rather than
+  skipped.
 
 All effect nodes resolve the manager through the shared static
 `PixelizerManager3D.resolve_manager_explicit(node)` (nearest ancestor applier's
@@ -328,6 +347,13 @@ in Additional invariants and the addon `README.md`.
   pass therefore sample depth at `uv`; an extra `1.0 - uv.y` mirrors the depth
   relative to the colour pass (the god-ray pass once did this and terminated
   rays on the wrong screen pixel).
+- **The camera projection the compositor receives is reverse-Z with a [0, 1]
+  depth range**, so `Projection.get_z_near()` / `get_z_far()` (OpenGL
+  convention) return nonsense (about -0.05 / 0.05 in the demo). The apply pass
+  pushes the matrix terms `projection.z.z` / `projection.w.z` and inverts
+  `raw = (P22 * z + P32) / (P23 * z + P33)` directly. Until 2026-10-16 it pushed
+  near/far, so `linearize_depth()` returned ~0.05 for everything and the
+  `revert` occlusion guard (0.05 tolerance) never fired.
 - **A texture cannot be a framebuffer attachment and a uniform in the same
   pass** — that is why the `snapshot` pass exists (it copies scene colour +
   depth in one dispatch; the apply pass attaches the scene colour/depth and
@@ -353,7 +379,11 @@ in Additional invariants and the addon `README.md`.
   changes or the manager exits — so switching `Camera3D.current` at runtime just
   works. **One manager per process** (the pipeline globals are global shader
   uniforms; a second manager warns); simultaneous split-screen is unsupported
-  (the effects bail on `view_count > 1`). Camera snap resolves the active camera
+  (the effects bail on `view_count > 1`). **Deferred by owner decision
+  (2026-10-16):** supporting it first needs the four process-wide globals
+  (`pixelizer_meta_bit`, `pixelizer_screen_size`, `pixelizer_lowres_mode`, the
+  palette LUT/dither pair) moved to per-material parameters; until then F5's
+  warning is the whole behaviour. Per-camera *switching* works. Camera snap resolves the active camera
   at call time (mover snap is fully shader-side and needs no camera lookup).
 - `create_pipeline` for compute must run on the render thread
   (`RenderingServer.call_on_render_thread`); raster pipelines are built lazily
@@ -364,6 +394,14 @@ in Additional invariants and the addon `README.md`.
   viewports force `MSAA_DISABLED` explicitly).
 
 ## Additional invariants
+
+- **Save bridge manifests with `PixelizerBridgeManifest.save_to(path)`, never a
+  bare `ResourceSaver.save()`.** Outside the editor (any `--script` run) the
+  text saver writes the header and every `ext_resource` without `uid=`, and
+  `demo.tscn` references the production manifest by uid. `save_to()` keeps the
+  existing header uid via `ResourceSaver.set_uid()` and stamps each
+  `ext_resource` with the uid `ResourceLoader.get_resource_uid()` reports (a
+  no-op inside the editor). Pinned by `tests/bridge/bridge_fixtures.gd`.
 
 - **Low-res mode** always uses a manager-owned `MirrorCamera` inside a
   manager-owned display SubViewport (`core/pixelizer_lowres_view.gd`); the user
@@ -516,7 +554,10 @@ in Additional invariants and the addon `README.md`.
     version-mismatch / missing-output entries are never applied, so the failure
     mode is always "rendered as authored", never a broken shader.
     `PixelizerGeometryState.bind()` leaves unsupported custom materials untouched
-    and logs a one-shot hint.
+    and logs a one-shot hint per node (node path, shader path, how to opt in).
+    The hint waits two frames and re-checks first, so the deferred-registration
+    race above never reports a node that then binds
+    (`tests/unsupported_material_check.gd`).
   - **`auto_bridge_custom_shaders` defaults to `false`** (safety gate) on
     `PixelizerManager3D`; enable it (and set `bridge_manifests`) to let objects
     swap in approved bridges. The manifest list is the trust boundary — there is
@@ -572,25 +613,35 @@ in Additional invariants and the addon `README.md`.
   its alpha) — the apply shader needs no branch.
   `PixelizerOutlinePalette` stores per-row `silhouette_alpha` / `inner_alpha`
   (float 0..1) and a `multiply_colors` mode: the default replaces at `alpha`;
-  multiply modulates (`color *= srgb_to_linear(rgb) * 2`; because the row colour
-  is sRGB-decoded in both modes, the invisible row is **~0.7354**, not 0.5 — the
-  ProPixelizer `_EdgeHighlightColor` convention assumes a plain multiply).
-  **Known limitation:** the `!revert` gate that suppresses ink on a non-visible
-  surface does *not* cover a non-pixelized occluder that spans a whole macro
-  block. `revert` compares two depth-copy samples (`base_raw` at `uv`,
-  `anchor_raw` at `snapped_uv`), and when the occluder also covers the anchor's
-  screen position both samples are the occluder's, so it stays false and the
-  occluder is inked with the pixelized object's edges. Measured and unfixed —
-  see "Defects found" in `SUMMARY.md` for the evidence and why a depth-only
-  replacement gate is not sufficient.
+  multiply modulates with the authored value as the factor
+  (`mix(color, color * rgb * 2, alpha)`, **no** sRGB decode — the ProPixelizer
+  `_EdgeHighlightColor` convention, so 0.5 is invisible; owner decision
+  2026-10-16). The opacity applies in both modes, so a hidden tag's opacity-0
+  row never modulates.
+  **Ink gate** (`visible_anchor` in the apply pass): a block inks (and gets the
+  focus tint) only when the pixel is not in front of its anchor (`revert`) AND
+  the anchor's own screen pixel is not hidden by a non-pixelized surface
+  (`anchor_hidden`: the scene depth at `snapped_uv` is nearer than the
+  metadata depth recorded there). The second test is what keeps a whole-block
+  occluder from being inked — `revert` cannot see it, since both of its depth
+  samples land on the occluder. It compares the *same* pixel in both buffers;
+  comparing the current pixel against the anchor's metadata depth instead
+  suppresses legitimate ink on blocks that straddle a silhouette (measured; the
+  capture matrix catches it). `tests/verify/verify_outline3.gd` holds the
+  in-game acceptance test.
   The depth test is a **second difference** (`2*centre - a - b` per axis,
   convex side only), so a slope at any angle stays clean; a step beyond
   `outline_interior_threshold` routes to the silhouette row. An optional crease
   term (`outline_normal_threshold`, 0 = off) samples the engine's
   normal-roughness scene texture at ±1 macro step for `1 - dot(n, n_neighbour)`;
-  that buffer only exists when SSAO/SSIL/SSR (or a material using
-  `hint_normal_roughness_texture`) needs it, and the pass warns once and skips the
-  term otherwise. The buffer holds **per-pixel** normals (normal maps and
+  the manager sets `needs_normal_roughness` on the apply effect while the
+  threshold is above 0, so the depth prepass writes the buffer without SSAO or
+  a requesting material (the pass warns once and skips the term when it is
+  missing). **Never infer "written" from `has_texture()`:** 4.7.1 Forward+ left
+  the texture allocated but unwritten (uninitialised contents) when nothing
+  requested it, and the term inked that garbage. The buffer is written only at
+  the anchor-lattice survivors (the main pass discards the rest), which is
+  exactly where the term samples. The buffer holds **per-pixel** normals (normal maps and
   animated surfaces included), so a low threshold inks normal-mapped water or
   foliage; the demo leaves the term off. Row 255 is the focus subject's row
   (`set_outline_color(255, c)`

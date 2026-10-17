@@ -46,9 +46,9 @@ working tree from the previous session (modified `AGENTS.md` / `README.md` /
 | Item | Status | Notes / evidence |
 |---|---|---|
 | D1a depth second difference | **Landed, verified** | Per-axis `2*centre − a − b`, convex side only (`curve > threshold`), so slopes stay clean; a step beyond `outline_interior_threshold` routes to the silhouette row. Before/after captures with the terrain applier outlined: the old shader floods the slopes with dash marks, the new one marks only the convex elevation edge. |
-| D1b normal/crease term | **Landed, conditional — see caveats** | `outline_normal_threshold` (default 0 = off) samples the engine’s named scene texture `forward_clustered / normal_roughness` at ±1 macro step and marks `1 − dot(n, n_neighbour) > threshold`. The pass binds it only when `has_texture()` succeeds (WARNING once + term skipped otherwise) — Forward+ only creates it for SSAO/SSIL/SSR or a `hint_normal_roughness_texture` material. Verified mechanically with an SSAO probe and a hint-material probe (buffer present, threshold toggling changes the ink). **Caveat:** the buffer holds per-pixel normals (normal maps, animated water), so a low threshold over-inks animated surfaces; the demo leaves the term off, and the caveat is documented. |
-| D2 compositing + row routing | **Landed** | `PixelizerOutlinePalette.multiply_colors` (`color *= linear(rgb) * 2`, 0.5 = invisible) with the opacity mix kept as the default; depth-only edges above the interior threshold route through the silhouette row. Multiply mode is not exercised by the demo (no authored palette); the shader branch compiles and is reviewed. |
-| D3 no visibility gate | **Landed** | Outline and focus tint are skipped when `revert` is true (self-colour-reverted pixels cannot ink their neighbours). Not reproducible in the current demo (no non-pixelized occluder in front of pixelized geometry); code-reviewed, depth write-back untouched. |
+| D1b normal/crease term | **Landed, conditional — see caveats** | `outline_normal_threshold` (default 0 = off) samples the engine’s named scene texture `forward_clustered / normal_roughness` at ±1 macro step and marks `1 − dot(n, n_neighbour) > threshold`. The pass binds it only when `has_texture()` succeeds (WARNING once + term skipped otherwise). *Corrected 2026-10-16 (fourth session):* 4.7.1 Forward+ keeps the buffer allocated in the demo even without SSAO or a requesting material, but its contents then differ from the forced buffer; the term is verified only with a `hint_normal_roughness_texture` material in view. Verified mechanically with an SSAO probe and a hint-material probe (buffer present, threshold toggling changes the ink). **Caveat:** the buffer holds per-pixel normals (normal maps, animated water), so a low threshold over-inks animated surfaces; the demo leaves the term off, and the caveat is documented. |
+| D2 compositing + row routing | **Landed, verified (fourth session)** | `PixelizerOutlinePalette.multiply_colors` — *superseded 2026-10-16:* multiply now uses the authored value as the factor with no sRGB decode (`mix(color, color * rgb * 2, alpha)`, 0.5 = invisible, owner decision) and honours the row opacity; depth-only edges above the interior threshold route through the silhouette row. `verify_outline3.gd`: 0.5 rows byte-identical to outlines off, 0.25 rows darken. |
+| D3 no visibility gate | **Landed, fixed and verified (fourth session)** | *Superseded 2026-10-16:* `revert` alone never fired (see "Fourth session" below — depth linearisation was broken) and could not see a whole-block occluder. Ink and focus tint now require `!revert && !anchor_hidden`; `verify_outline3.gd` measures 0 px of ink in the occluded rect vs 2130 px in the exposed control. |
 | D4 runtime robustness | **Landed, verified** | `pixel_size` clamped to 1–5 and `outline_id` to 0–254 with one-shot warnings; tag 255 is now settable (focus subject row) so `ANCHOR_META_LIGHT` and the registry agree; grass billboard basis derived by cross product against world up with a fallback (the old ground projection was NaN at the pitch singularity); `ANCHOR_CLIP_AT(alpha, 0.5)` gives the cutout foliage shaders a minimum scissor. |
 
 ### E — Tests and tooling
@@ -320,9 +320,10 @@ feature**: `demo.tscn` pins `pixel_size = 5` on the top-level applier and
 *cannot* reach `Knight_Body`. A counter-test on an inheriting subtree shows both
 the live write and the whole-resource swap landing one frame later with
 `rescan_interval = 0`. Propagation works; the probe targeted a mesh that can
-never respond. Practical consequence worth knowing: in the demo, the tuner's
-Look → Pixelization → default pixel size moves the terrain (which inherits) and
-not the characters (which are pinned).
+never respond. *Corrected in the fourth session:* the terrain did **not**
+inherit either — its applier is nested in the pinned top-level one, so nothing
+in the demo followed the settings default. The pin (equal to the default) was
+removed, and `verify_core.gd` now asserts an inheriting and a pinned subject.
 
 ### Defects found
 
@@ -349,6 +350,8 @@ not the characters (which are pinned).
    "foreign surface" — e.g. sampling the metadata at the fragment's own
    position, which is empty for non-survivor fragments and so needs a different
    formulation than the current block-wide test.
+   **Fixed in the fourth session** — the root cause was depth linearisation, not
+   the gate's shape; see below.
 
 3. **The multiply mode's documented neutral is wrong.** The apply pass does
    `color *= srgb_to_linear(row) * 2`, so the invisible row is
@@ -358,8 +361,12 @@ not the characters (which are pinned).
    in `pixelizer_outline_palette.gd`, `pixelizer_manager_3d.gd` and `AGENTS.md`;
    the semantics were left alone because the fix is a design choice (dropping
    the decode in multiply mode makes 0.5 neutral again, matching ProPixelizer).
+   **Owner chose ProPixelizer; implemented in the fourth session.**
 
 ### Unresolved, and not covered at all
+
+*Status as of the third session; see "Fourth session" below for what was
+resolved since (D1b, D2, palette LUT, foliage decision).*
 
 - **D1b crease term**: observed to change the render with SSAO on in one run
   (threshold 0 vs 0.6, noise floor 0 px) and to change nothing in another. The
@@ -399,3 +406,46 @@ not the characters (which are pinned).
 4. **Design the control first.** Two of the probes above "passed" their headline
    assertion while measuring nothing (a rect the occluder did not cover; a
    control that could not respond to the toggle). Only the controls caught it.
+
+## Fourth session: VERIFICATION.md follow-up (2026-10-16)
+
+**Root cause behind D3: depth linearisation was broken.** The compositor
+receives a reverse-Z projection with a [0, 1] depth range, and
+`Projection.get_z_near()` / `get_z_far()` assume the OpenGL convention — in the
+demo they returned −0.05 / 0.05. `linearize_depth()` therefore returned ~0.05 m
+for every pixel (measured: scene/metadata depth ratio a constant 0.0018), so the
+`revert` occlusion guard, with its 0.05 m tolerance, never fired. The apply pass
+now pushes `projection.z.z` / `projection.w.z` and inverts the projection
+directly (measured ratio ≈ 1.00). With metric depth the guard works: the
+non-pixelized water tile's edge and the fireflies now keep their own pixels
+instead of being smeared by terrain anchors (`anchor` capture: 0.20 %, accepted
+into the references).
+
+**D3 gate.** `anchor_hidden` compares the scene depth and the metadata depth at
+the anchor's *own* pixel; ink and the focus tint need `!revert &&
+!anchor_hidden`. Acceptance: occluded rect 0 px, exposed control 2130 px, noise
+floor 0 px. The "exposed rect reports 0 px" puzzle (VERIFICATION item 7) did not
+reproduce with the committed probe.
+
+**Also fixed:** multiply mode per the owner (no decode, opacity honoured — the
+missing opacity is what made "a neutral palette shifts the frame": hidden tags'
+opacity-0 white rows were doubling the colour); the outline registry keeps
+per-tag state across a reseed; the unsupported-custom-material hint now exists
+(one line per node, after a two-frame re-check), and a late
+`register_pixelized_material()` re-scans appliers — the demo's point-light
+volume was being skipped silently because its deferred registration lost the
+race with the first bind; the capture helper's `mover_count` always read 0 (it
+searched by script class).
+
+**New coverage:** `tests/unsupported_material_check.gd`,
+`tests/bridge_watchdog_check.gd` (B1's branch, with a negative control), three
+matrix entries (`outline_dense`, `ortho_mover`, `palette_lut`), F1 retargeted,
+and a forced-buffer crease test. Per-item status is in `VERIFICATION.md`.
+
+**Follow-up (same day).** The crease term's unforced buffer was allocated but
+never written (uninitialised contents, seen by blitting the raw buffer); the
+manager now sets `needs_normal_roughness` on the apply effect while the term is
+on, and the forced and unforced renders are identical. The generator's textual
+uid re-stamp was replaced by `PixelizerBridgeManifest.save_to()` (engine-sourced
+UIDs, shared with the dock). Both supersede the D1b caveat and the B2 note
+above; details in `VERIFICATION.md` item 3 and Part 5.

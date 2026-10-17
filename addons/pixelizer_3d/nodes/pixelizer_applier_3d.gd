@@ -262,7 +262,9 @@ func _flush_rescan() -> void:
 ## runtime additions). Nested appliers are re-derived too, so an inherited
 ## property change on this applier propagates down.
 func rescan() -> void:
-	if not _manager_valid():
+	# A disabled applier stays unbound: settings changes and late material
+	# registrations re-scan every applier, and must not re-bind this subtree.
+	if not enabled or not _manager_valid():
 		return
 	_resolve_effective()
 	_scan(self)
@@ -316,12 +318,26 @@ func _connect_manager_signals() -> void:
 		manager.tree_exiting.connect(_on_manager_tree_exiting, CONNECT_ONE_SHOT)
 	if not manager.settings_changed.is_connected(_on_settings_changed):
 		manager.settings_changed.connect(_on_settings_changed)
+	if not manager.pixelized_material_registered.is_connected(_on_pixelized_material_registered):
+		manager.pixelized_material_registered.connect(_on_pixelized_material_registered)
 
 
 ## A look-settings change alters inherited defaults: re-derive this subtree.
 func _on_settings_changed() -> void:
 	if _ready_done:
 		_refresh_children()
+
+
+## A custom material opted in after this subtree was scanned (effect nodes
+## register deferred, after the applier's first bind attempt): re-scan when some
+## node here is still unbound, so it binds now instead of staying skipped.
+func _on_pixelized_material_registered(_material: ShaderMaterial) -> void:
+	if not _ready_done:
+		return
+	for state in _states.values():
+		if not (state as PixelizerGeometryState).is_applied():
+			_refresh_children()
+			return
 
 
 ## One loud report per applier when no manager resolves.

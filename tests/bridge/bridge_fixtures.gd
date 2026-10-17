@@ -5,7 +5,8 @@ extends SceneTree
 ##     --script res://tests/bridge/bridge_fixtures.gd
 ##
 ## Asserts scan/generate behaviour, determinism/idempotence, include flattening,
-## the output-dir-in-root guard, stale detection, manifest round-trip, the
+## the output-dir-in-root guard, stale detection, manifest round-trip and UID
+## preservation, the
 ## runtime registry swap, and that no file under the vendored addon tree is
 ## touched by a scan/generate run.
 
@@ -28,6 +29,7 @@ func _initialize() -> void:
 	_test_determinism_and_idempotence()
 	_test_alpha_boundary()
 	_test_manifest_round_trip()
+	_test_manifest_uids()
 	_test_registry_gating()
 	_test_stale_entry()
 	_test_output_dir_guard()
@@ -146,6 +148,58 @@ func _test_manifest_round_trip() -> void:
 	_check(loaded.entries[0].approved, "entry approved survives")
 	_check(loaded.output_dir == GENERATED + "/", "output_dir survives")
 	_check(loaded.roots.size() == 1, "roots survive")
+
+
+## `PixelizerBridgeManifest.save_to()` keeps the UIDs a headless
+## `ResourceSaver.save()` drops: a stable header uid across re-saves (demo.tscn
+## references the production manifest by uid) and the engine's uid on every
+## ext_resource line.
+func _test_manifest_uids() -> void:
+	var path := GENERATED + "/manifest_uids.tres"
+	var manifest := PixelizerBridgeManifest.new()
+	manifest.get_or_create_entry(MST_TERRAIN).approved = true
+	_check(manifest.save_to(path) == OK, "save_to writes a fresh manifest")
+	var first := _header_uid(path)
+	_check(first.begins_with("uid://"), "a fresh manifest gets a header uid (%s)" % first)
+	_check(_ext_lines_have_engine_uids(path), "every ext_resource carries the engine's uid")
+
+	# Re-save a loaded copy: the header uid must not change.
+	var loaded := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE) as PixelizerBridgeManifest
+	loaded.get_or_create_entry(MST_SHADERS + "/mst_grass.gdshader")
+	_check(loaded.save_to(path) == OK, "save_to re-saves an existing manifest")
+	_check(_header_uid(path) == first, "the header uid survives a re-save (%s -> %s)" % [first, _header_uid(path)])
+	_check(_ext_lines_have_engine_uids(path), "ext_resource uids survive a re-save")
+
+	# Why save_to exists (informational: if the engine starts writing UIDs in a
+	# --script run, the stamping pass becomes a no-op rather than wrong).
+	var bare := GENERATED + "/manifest_uids_bare.tres"
+	ResourceSaver.save(loaded, bare)
+	print("INFO bare ResourceSaver.save header uid in a --script run: '%s'" % _header_uid(bare))
+
+
+func _header_uid(path: String) -> String:
+	for line in FileAccess.get_file_as_string(path).split("\n"):
+		if line.begins_with("[gd_resource"):
+			var found := RegEx.create_from_string(" uid=\"([^\"]*)\"").search(line)
+			return found.get_string(1) if found != null else ""
+	return ""
+
+
+func _ext_lines_have_engine_uids(path: String) -> bool:
+	var seen := 0
+	var path_attr := RegEx.create_from_string(" path=\"([^\"]*)\"")
+	var uid_attr := RegEx.create_from_string(" uid=\"([^\"]*)\"")
+	for line in FileAccess.get_file_as_string(path).split("\n"):
+		if not line.begins_with("[ext_resource"):
+			continue
+		seen += 1
+		var res_path := path_attr.search(line)
+		var uid := uid_attr.search(line)
+		if res_path == null or uid == null:
+			return false
+		if uid.get_string(1) != ResourceUID.id_to_text(ResourceLoader.get_resource_uid(res_path.get_string(1))):
+			return false
+	return seen > 0
 
 
 func _test_registry_gating() -> void:
